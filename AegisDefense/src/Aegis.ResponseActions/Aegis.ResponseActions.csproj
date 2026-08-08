@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows-only implementation of IResponseExecutor. net48 (not net8.0-windows) so this
+    assembly - and therefore the Windows Service that hosts it - runs unmodified from
+    Windows 7 SP1 / Server 2012 R2 (where .NET Framework 4.8 is an in-place update, no new
+    runtime install needed on most fleets) through Windows 11 / Server 2025, where 4.8 ships
+    inbox. Everything here shells out to well-known, already-present OS tools (netsh, sc.exe)
+    or uses framework assemblies that have been stable across that entire range, rather than
+    P/Invoking version-specific APIs.
+
+    This project intentionally cannot be compiled by the .NET SDK on a non-Windows CI agent
+    the way Aegis.Core/Ipc/Data can - MSBuild's net48 targeting works through the
+    Microsoft.NETFramework.ReferenceAssemblies package there, but the *runtime behavior*
+    (netsh/sc.exe calls, ServiceController) only makes sense on Windows. Build/run it on a
+    Windows agent or an actual Windows box.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Aegis.ResponseActions</RootNamespace>
+    <AssemblyName>Aegis.ResponseActions</AssemblyName>
+    <UseWindowsForms>false</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aegis.Core\Aegis.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.ServiceProcess" />
+    <Reference Include="System.Management" />
+  </ItemGroup>
+
+  <!-- Lets `dotnet build` resolve net48 reference assemblies on a non-Windows dev/CI machine for syntax/type checking. Harmless (and unnecessary) on real Windows with Visual Studio / Build Tools installed. -->
+  <ItemGroup Condition="'$(MSBuildRuntimeType)' == 'Core' AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

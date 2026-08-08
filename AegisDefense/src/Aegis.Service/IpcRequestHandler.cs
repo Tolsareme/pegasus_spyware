@@ -1,0 +1,118 @@
+using Aegis.Core.Diagnostics;
+using Aegis.Ipc;
+using Aegis.Ipc.Contracts;
+
+namespace Aegis.Service;
+
+/// <summary>Translates each named-pipe request into a <see cref="DefenseEngine"/> call and shapes the response envelope. Kept separate from DefenseEngine so the engine has zero knowledge of the wire protocol.</summary>
+public sealed class IpcRequestHandler
+{
+    private readonly DefenseEngine _engine;
+    private readonly IAegisLogger _logger;
+
+    public IpcRequestHandler(DefenseEngine engine, IAegisLogger logger)
+    {
+        _engine = engine;
+        _logger = logger;
+    }
+
+    public async Task<IpcEnvelope> HandleAsync(IpcEnvelope request, CancellationToken ct)
+    {
+        try
+        {
+            switch (request.MessageType)
+            {
+                case MessageTypes.GetAlerts:
+                {
+                    var req = request.DeserializePayload<GetAlertsRequest>()!;
+                    var alerts = await _engine.GetAlertsAsync(req.HostId, req.StatusFilter, req.Take).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.GetAlerts, new GetAlertsResponse(alerts));
+                }
+                case MessageTypes.UpdateAlertStatus:
+                {
+                    var req = request.DeserializePayload<UpdateAlertStatusRequest>()!;
+                    var ok = await _engine.UpdateAlertStatusAsync(req.AlertId, req.NewStatus).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.UpdateAlertStatus, new UpdateAlertStatusResponse(ok));
+                }
+                case MessageTypes.GetEvents:
+                {
+                    var req = request.DeserializePayload<GetEventsRequest>()!;
+                    var events = await _engine.GetEventsAsync(req.HostId, req.Since, req.Take).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.GetEvents, new GetEventsResponse(events));
+                }
+                case MessageTypes.GetStatistics:
+                {
+                    var stats = await _engine.GetStatisticsAsync().ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.GetStatistics, new GetStatisticsResponse(stats));
+                }
+                case MessageTypes.GetPolicy:
+                {
+                    return request.CreateResponse(MessageTypes.GetPolicy, new GetPolicyResponse(_engine.GetActivePolicy()));
+                }
+                case MessageTypes.SetPolicy:
+                {
+                    var req = request.DeserializePayload<SetPolicyRequest>()!;
+                    var (accepted, reason) = await _engine.SetPolicyAsync(req.SignedPolicy).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.SetPolicy, new SetPolicyResponse(accepted, reason));
+                }
+                case MessageTypes.GetPendingApprovals:
+                {
+                    var approvals = await _engine.GetPendingApprovalsAsync().ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.GetPendingApprovals, new GetPendingApprovalsResponse(approvals));
+                }
+                case MessageTypes.ApproveAction:
+                {
+                    var req = request.DeserializePayload<ApproveActionRequest>()!;
+                    var (executed, detail) = await _engine.ApproveActionAsync(req.ApprovalId, req.ApprovedBy).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.ApproveAction, new ApproveActionResponse(executed, detail));
+                }
+                case MessageTypes.RejectAction:
+                {
+                    var req = request.DeserializePayload<RejectActionRequest>()!;
+                    var ok = await _engine.RejectActionAsync(req.ApprovalId, req.RejectedBy, req.Reason).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RejectAction, new RejectActionResponse(ok));
+                }
+                case MessageTypes.GetGraphNeighborhood:
+                {
+                    var req = request.DeserializePayload<GetGraphNeighborhoodRequest>()!;
+                    var (nodes, edges) = _engine.GetGraphNeighborhood(req.NodeId, req.MaxHops);
+                    return request.CreateResponse(MessageTypes.GetGraphNeighborhood, new GetGraphNeighborhoodResponse(nodes, edges));
+                }
+                case MessageTypes.ListDecoys:
+                {
+                    return request.CreateResponse(MessageTypes.ListDecoys, new ListDecoysResponse(_engine.ListDecoys()));
+                }
+                case MessageTypes.RegisterDecoy:
+                {
+                    var req = request.DeserializePayload<RegisterDecoyRequest>()!;
+                    await _engine.RegisterDecoyAsync(req.Decoy).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RegisterDecoy, new RegisterDecoyResponse(true, null));
+                }
+                case MessageTypes.RemoveDecoy:
+                {
+                    var req = request.DeserializePayload<RemoveDecoyRequest>()!;
+                    var ok = await _engine.RemoveDecoyAsync(req.DecoyId).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RemoveDecoy, new RemoveDecoyResponse(ok));
+                }
+                case MessageTypes.GetVulnerabilities:
+                {
+                    var req = request.DeserializePayload<GetVulnerabilitiesRequest>()!;
+                    var vulns = await _engine.GetVulnerabilitiesAsync(req.HostId).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.GetVulnerabilities, new GetVulnerabilitiesResponse(vulns));
+                }
+                case MessageTypes.GetServiceHealth:
+                {
+                    return request.CreateResponse(MessageTypes.GetServiceHealth,
+                        new GetServiceHealthResponse(true, "1.0.0", _engine.StartedAt, Array.Empty<string>()));
+                }
+                default:
+                    return request.CreateErrorResponse($"Unknown message type '{request.MessageType}'.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(nameof(IpcRequestHandler), $"Error handling '{request.MessageType}'.", ex);
+            return request.CreateErrorResponse(ex.Message);
+        }
+    }
+}

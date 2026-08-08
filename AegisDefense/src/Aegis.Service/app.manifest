@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" name="AegisDefenseService"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <!--
+          The Windows Service Control Manager always starts a registered service as its
+          configured account (LocalSystem by default here) regardless of this manifest.
+          requireAdministrator only matters when a developer runs the exe directly/
+          interactively (via Program.cs's console-mode fallback) for debugging - the
+          telemetry collectors and response actions both need elevation either way, so
+          fail fast with a UAC prompt instead of a confusing runtime permission error.
+        -->
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 7 SP1/Server 2008 R2 through Windows 10/11/Server 2025 compatibility GUIDs (Microsoft-documented). -->
+      <supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"/> <!-- Windows Vista / Server 2008 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/> <!-- Windows 7 / Server 2008 R2 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/> <!-- Windows 8 / Server 2012 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/> <!-- Windows 8.1 / Server 2012 R2 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/> <!-- Windows 10 / 11 / Server 2016-2025 -->
+    </application>
+  </compatibility>
+</assembly>

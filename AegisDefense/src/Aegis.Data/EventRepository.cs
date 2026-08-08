@@ -1,0 +1,156 @@
+using System.Text.Json;
+using Aegis.Core.Events;
+using Microsoft.Data.Sqlite;
+
+namespace Aegis.Data;
+
+/// <summary>Append-only store for normalized events - the durable record behind every alert's evidence trail.</summary>
+public sealed class EventRepository
+{
+    private readonly AegisDatabase _db;
+
+    public EventRepository(AegisDatabase db) => _db = db;
+
+    public async Task InsertAsync(NormalizedEvent evt, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+INSERT OR REPLACE INTO events
+ (event_id, timestamp, host_id, user_id, process_id, parent_process_id, process_hash, signer,
+  image_path, parent_image_path, host_role, logon_type, action_type, object_type, object_id,
+  source_ip, destination_ip, destination_port, privilege_context, result, confidence,
+  raw_event_reference, command_line, tags_json)
+VALUES
+ ($event_id, $timestamp, $host_id, $user_id, $process_id, $parent_process_id, $process_hash, $signer,
+  $image_path, $parent_image_path, $host_role, $logon_type, $action_type, $object_type, $object_id,
+  $source_ip, $destination_ip, $destination_port, $privilege_context, $result, $confidence,
+  $raw_event_reference, $command_line, $tags_json);";
+
+        BindEvent(cmd, evt);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<NormalizedEvent>> QueryAsync(string? hostId = null, DateTimeOffset? since = null, int take = 500, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+
+        var where = new List<string>();
+        if (hostId is not null) where.Add("host_id = $host_id");
+        if (since is not null) where.Add("timestamp >= $since");
+        var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+
+        cmd.CommandText = $"SELECT * FROM events {whereClause} ORDER BY timestamp DESC LIMIT $take;";
+        if (hostId is not null) cmd.Parameters.AddWithValue("$host_id", hostId);
+        if (since is not null) cmd.Parameters.AddWithValue("$since", since.Value.ToString("O"));
+        cmd.Parameters.AddWithValue("$take", take);
+
+        var results = new List<NormalizedEvent>();
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            results.Add(ReadEvent(reader));
+        }
+        return results;
+    }
+
+    public async Task<int> CountSinceAsync(DateTimeOffset since, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM events WHERE timestamp >= $since;";
+        cmd.Parameters.AddWithValue("$since", since.ToString("O"));
+        var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return Convert.ToInt32(result);
+    }
+
+    public async Task<IReadOnlyList<string>> DistinctHostIdsAsync(CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT DISTINCT host_id FROM events;";
+        var results = new List<string>();
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false)) results.Add(reader.GetString(0));
+        return results;
+    }
+
+    private static void BindEvent(SqliteCommand cmd, NormalizedEvent evt)
+    {
+        cmd.Parameters.AddWithValue("$event_id", evt.EventId.ToString());
+        cmd.Parameters.AddWithValue("$timestamp", evt.Timestamp.ToString("O"));
+        cmd.Parameters.AddWithValue("$host_id", evt.HostId);
+        cmd.Parameters.AddWithValue("$user_id", (object?)evt.UserId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$process_id", (object?)evt.ProcessId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$parent_process_id", (object?)evt.ParentProcessId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$process_hash", (object?)evt.ProcessHash ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$signer", (object?)evt.Signer ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$image_path", (object?)evt.ImagePath ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$parent_image_path", (object?)evt.ParentImagePath ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$host_role", (object?)evt.HostRole ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$logon_type", (object?)evt.LogonType ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$action_type", evt.ActionType.ToString());
+        cmd.Parameters.AddWithValue("$object_type", evt.ObjectType.ToString());
+        cmd.Parameters.AddWithValue("$object_id", (object?)evt.ObjectId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$source_ip", (object?)evt.SourceIp ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$destination_ip", (object?)evt.DestinationIp ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$destination_port", (object?)evt.DestinationPort ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$privilege_context", (object?)evt.PrivilegeContext ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$result", evt.Result.ToString());
+        cmd.Parameters.AddWithValue("$confidence", evt.Confidence);
+        cmd.Parameters.AddWithValue("$raw_event_reference", (object?)evt.RawEventReference ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$command_line", (object?)evt.CommandLine ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$tags_json", evt.Tags is null ? DBNull.Value : JsonSerializer.Serialize(evt.Tags));
+    }
+
+    private static NormalizedEvent ReadEvent(SqliteDataReader r)
+    {
+        IReadOnlyDictionary<string, string>? tags = null;
+        var tagsOrdinal = r.GetOrdinal("tags_json");
+        if (!r.IsDBNull(tagsOrdinal))
+        {
+            tags = JsonSerializer.Deserialize<Dictionary<string, string>>(r.GetString(tagsOrdinal));
+        }
+
+        return new NormalizedEvent
+        {
+            EventId = Guid.Parse(r.GetString(r.GetOrdinal("event_id"))),
+            Timestamp = DateTimeOffset.Parse(r.GetString(r.GetOrdinal("timestamp"))),
+            HostId = r.GetString(r.GetOrdinal("host_id")),
+            UserId = GetNullableString(r, "user_id"),
+            ProcessId = GetNullableInt(r, "process_id"),
+            ParentProcessId = GetNullableInt(r, "parent_process_id"),
+            ProcessHash = GetNullableString(r, "process_hash"),
+            Signer = GetNullableString(r, "signer"),
+            ImagePath = GetNullableString(r, "image_path"),
+            ParentImagePath = GetNullableString(r, "parent_image_path"),
+            HostRole = GetNullableString(r, "host_role"),
+            LogonType = GetNullableInt(r, "logon_type"),
+            ActionType = EnumCompat.Parse<ActionType>(r.GetString(r.GetOrdinal("action_type"))),
+            ObjectType = EnumCompat.Parse<ObjectType>(r.GetString(r.GetOrdinal("object_type"))),
+            ObjectId = GetNullableString(r, "object_id"),
+            SourceIp = GetNullableString(r, "source_ip"),
+            DestinationIp = GetNullableString(r, "destination_ip"),
+            DestinationPort = GetNullableInt(r, "destination_port"),
+            PrivilegeContext = GetNullableString(r, "privilege_context"),
+            Result = EnumCompat.Parse<ActionResult>(r.GetString(r.GetOrdinal("result"))),
+            Confidence = r.GetDouble(r.GetOrdinal("confidence")),
+            RawEventReference = GetNullableString(r, "raw_event_reference"),
+            CommandLine = GetNullableString(r, "command_line"),
+            Tags = tags,
+        };
+    }
+
+    internal static string? GetNullableString(SqliteDataReader r, string column)
+    {
+        var ordinal = r.GetOrdinal(column);
+        return r.IsDBNull(ordinal) ? null : r.GetString(ordinal);
+    }
+
+    internal static int? GetNullableInt(SqliteDataReader r, string column)
+    {
+        var ordinal = r.GetOrdinal(column);
+        return r.IsDBNull(ordinal) ? null : r.GetInt32(ordinal);
+    }
+}

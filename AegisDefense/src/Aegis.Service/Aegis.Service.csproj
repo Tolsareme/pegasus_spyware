@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Windows Service host: wires Aegis.Sensor (collectors) -> Aegis.Core (rules/scoring/
+    graph/state/policy) -> Aegis.Data (SQLite) -> Aegis.ResponseActions (containment), and
+    exposes Aegis.Ipc's named pipe to Aegis.Gui. net48 for the same "old + new Windows +
+    Server" reason as the other Windows-only projects.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Aegis.Service</RootNamespace>
+    <AssemblyName>AegisDefenseService</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aegis.Core\Aegis.Core.csproj" />
+    <ProjectReference Include="..\Aegis.Data\Aegis.Data.csproj" />
+    <ProjectReference Include="..\Aegis.Ipc\Aegis.Ipc.csproj" />
+    <ProjectReference Include="..\Aegis.Sensor\Aegis.Sensor.csproj" />
+    <ProjectReference Include="..\Aegis.ResponseActions\Aegis.ResponseActions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.ServiceProcess" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MSBuildRuntimeType)' == 'Core' AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared IPC contracts + a thin named-pipe transport used between Aegis.Service (the
+    Windows Service) and Aegis.Gui (the WPF control app). net8.0 here is fine even though
+    the Service/GUI themselves target net48 for OS compatibility - IPC message *contracts*
+    are just POCOs/JSON and are referenced as source-compatible types; System.IO.Pipes'
+    NamedPipeServerStream/ClientStream API is identical across net48 and net8.0, so the
+    transport code doubles as a Linux-testable reference implementation.
+  -->
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Aegis.Ipc</RootNamespace>
+    <AssemblyName>Aegis.Ipc</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aegis.Core\Aegis.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+</Project>

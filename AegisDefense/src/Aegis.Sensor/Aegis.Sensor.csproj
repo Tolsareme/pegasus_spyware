@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Windows telemetry collectors (doc §5/§19). net48 for the same fleet-compatibility
+    reason as Aegis.ResponseActions - see that project's comment. Deliberately favors
+    APIs/tools present since Windows 7 SP1 (WMI, the classic Security event log,
+    IP Helper) over ETW so the MVP sensor "just works" everywhere without extra setup;
+    doc §19 calls out ETW as a *where useful* addition, which is the natural next step
+    once this baseline is proven (WP1).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Aegis.Sensor</RootNamespace>
+    <AssemblyName>Aegis.Sensor</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aegis.Core\Aegis.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Management" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MSBuildRuntimeType)' == 'Core' AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

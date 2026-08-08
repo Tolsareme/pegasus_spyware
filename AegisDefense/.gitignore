@@ -1,0 +1,26 @@
+## .NET / Visual Studio
+bin/
+obj/
+*.user
+.vs/
+*.suo
+
+## Test / coverage
+TestResults/
+*.trx
+coverage/
+
+## Local data & secrets (never commit real telemetry, keys, or DBs)
+*.db
+*.db-shm
+*.db-wal
+*.pfx
+*.snk
+!policies/*.sample.json
+data/
+logs/
+*.log
+
+## OS
+.DS_Store
+Thumbs.db

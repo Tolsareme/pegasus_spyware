@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WPF desktop control app: alerts, statistics, event management, and the autonomy/policy
+    controls the task asked for ("the rest need to be autonomous with options the gui to
+    control them"). net48 + WPF so it runs on the same broad Windows range as the service -
+    WPF has shipped in the full .NET Framework since 3.0, no separate install needed on any
+    supported OS.
+
+    NOTE: this project needs the Windows Desktop workload (WPF SDK) to build, which only
+    exists on a Windows dev machine / Windows build agent - unlike the other net48 projects
+    in this solution, it cannot be cross-compiled on Linux via reference-assembly packages.
+    Build it with Visual Studio or `dotnet build` on Windows.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Aegis.Gui</RootNamespace>
+    <AssemblyName>AegisDefenseConsole</AssemblyName>
+    <OutputType>WinExe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aegis.Core\Aegis.Core.csproj" />
+    <ProjectReference Include="..\Aegis.Ipc\Aegis.Ipc.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- System.Security.Cryptography.ProtectedData (DPAPI) lives in this framework assembly on net48, not in the default reference set. -->
+    <Reference Include="System.Security" />
+  </ItemGroup>
+
+</Project>

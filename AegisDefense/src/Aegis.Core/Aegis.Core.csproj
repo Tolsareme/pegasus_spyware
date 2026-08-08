@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Aegis.Core is the OS-agnostic "brain" of the defense platform: normalized event
+    schema, rule engine, scoring, attack-state estimation, policy engine, deception
+    and vulnerability logic. It has ZERO Windows-specific dependencies so that it can
+    be unit tested on any platform and reused unchanged whether it is hosted inside
+    the net48 Windows Service (old/new Windows + Windows Server) or a future Linux
+    agent. All OS integration (ETW, EventLog, WMI, WPF, firewall calls, ...) lives in
+    the Windows-only projects and talks to this library through plain interfaces.
+  -->
+
+  <PropertyGroup>
+    <!--
+      netstandard2.0 is the binary contract the net48 Windows Service/GUI (old + new
+      Windows, Windows Server) actually consume; net8.0 is built alongside it purely so
+      this library can be compiled and unit tested quickly on any dev/CI machine
+      (including non-Windows). Both must stay green - see Aegis.Core/Compat for the small
+      shims that make that possible.
+    -->
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Aegis.Core</RootNamespace>
+    <AssemblyName>Aegis.Core</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+</Project>

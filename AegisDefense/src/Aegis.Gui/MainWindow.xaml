@@ -1,0 +1,290 @@
+<Window x:Class="Aegis.Gui.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Aegis Defense Console" Height="800" Width="1280" WindowStartupLocation="CenterScreen">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Top bar: connection status + manual refresh -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="AEGIS AUTONOMOUS DEFENSE" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" DockPanel.Dock="Left"/>
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                <Ellipse Width="10" Height="10" Margin="8,0,4,0" VerticalAlignment="Center"
+                         Fill="{Binding IsConnected, Converter={StaticResource BoolToStatusBrush}}"/>
+                <TextBlock Text="{Binding ConnectionStatus}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <Button Content="Reconnect" Command="{Binding ConnectCommand}"/>
+                <Button Content="Refresh Now" Command="{Binding RefreshCommand}"/>
+            </StackPanel>
+            <TextBlock Text=" "/>
+        </DockPanel>
+
+        <TabControl Grid.Row="1">
+
+            <!-- ===================== DASHBOARD / STATISTICS ===================== -->
+            <TabItem Header="Dashboard">
+                <ScrollViewer>
+                    <StackPanel Margin="8">
+                        <UniformGrid Columns="4" Rows="2">
+                            <GroupBox Header="Hosts monitored">
+                                <TextBlock Text="{Binding Statistics.TotalHostsMonitored}" FontSize="28"/>
+                            </GroupBox>
+                            <GroupBox Header="Events (24h)">
+                                <TextBlock Text="{Binding Statistics.EventsLast24h}" FontSize="28"/>
+                            </GroupBox>
+                            <GroupBox Header="Alerts (24h)">
+                                <TextBlock Text="{Binding Statistics.AlertsLast24h}" FontSize="28"/>
+                            </GroupBox>
+                            <GroupBox Header="Open alerts">
+                                <TextBlock Text="{Binding Statistics.OpenAlerts}" FontSize="28"/>
+                            </GroupBox>
+                            <GroupBox Header="Critical alerts (24h)">
+                                <TextBlock Text="{Binding Statistics.CriticalAlerts}" FontSize="28" Foreground="{StaticResource CritBrush}"/>
+                            </GroupBox>
+                            <GroupBox Header="Hosts in non-benign state (%)">
+                                <TextBlock Text="{Binding Statistics.AverageHostRisk, StringFormat={}{0:F0}%}" FontSize="28"/>
+                            </GroupBox>
+                            <GroupBox Header="Service uptime">
+                                <TextBlock Text="{Binding Statistics.ServiceUptime}" FontSize="20"/>
+                            </GroupBox>
+                            <GroupBox Header="Pending approvals">
+                                <TextBlock Text="{Binding PendingApprovals.Count}" FontSize="28" Foreground="{StaticResource WarnBrush}"/>
+                            </GroupBox>
+                        </UniformGrid>
+
+                        <GroupBox Header="Engine status (control these from the Policy &amp; Autonomy tab)">
+                            <ItemsControl ItemsSource="{Binding Statistics.Engines}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="2">
+                                            <Ellipse Width="8" Height="8" Margin="0,0,6,0"
+                                                     Fill="{Binding Enabled, Converter={StaticResource BoolToStatusBrush}}"/>
+                                            <TextBlock Width="180" Text="{Binding Name}"/>
+                                            <TextBlock Width="60" Text="{Binding Enabled}"/>
+                                            <TextBlock Text="{Binding Detail}" Foreground="{StaticResource MutedTextBrush}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </GroupBox>
+
+                        <GroupBox Header="Alerts by severity (24h)">
+                            <ItemsControl ItemsSource="{Binding Statistics.AlertsBySeverity}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="2">
+                                            <TextBlock Width="120" Text="{Binding Key}"/>
+                                            <TextBlock Text="{Binding Value}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </GroupBox>
+
+                        <GroupBox Header="Hosts by current attack-state estimate">
+                            <ItemsControl ItemsSource="{Binding Statistics.HostsByAttackState}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="2">
+                                            <TextBlock Width="160" Text="{Binding Key}"/>
+                                            <TextBlock Text="{Binding Value}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================== ALERTS ===================== -->
+            <TabItem Header="Alerts">
+                <DockPanel Margin="8">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <Button Content="Acknowledge" Command="{Binding AckAlertCommand}" CommandParameter="{Binding SelectedAlert}"/>
+                        <Button Content="Mark Investigating" Command="{Binding ContainAlertHostCommand}" CommandParameter="{Binding SelectedAlert}"/>
+                    </StackPanel>
+                    <DataGrid x:Name="AlertsGrid" ItemsSource="{Binding Alerts}" SelectedItem="{Binding SelectedAlert}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Created" Binding="{Binding CreatedAt}" Width="150"/>
+                            <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="120"/>
+                            <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="220"/>
+                            <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="80"/>
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100"/>
+                            <DataGridTextColumn Header="Attack State" Binding="{Binding EstimatedState}" Width="120"/>
+                            <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence, StringFormat={}{0:P0}}" Width="90"/>
+                            <DataGridTextColumn Header="Recommended" Binding="{Binding RecommendedResponse}" Width="110"/>
+                            <DataGridTextColumn Header="Applied" Binding="{Binding AppliedResponse}" Width="90"/>
+                            <DataGridTextColumn Header="Campaign" Binding="{Binding CampaignId}" Width="90"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ===================== EVENT MANAGEMENT ===================== -->
+            <TabItem Header="Events">
+                <DataGrid ItemsSource="{Binding Events}" Margin="8">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="150"/>
+                        <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="110"/>
+                        <DataGridTextColumn Header="User" Binding="{Binding UserId}" Width="100"/>
+                        <DataGridTextColumn Header="Action" Binding="{Binding ActionType}" Width="130"/>
+                        <DataGridTextColumn Header="Object" Binding="{Binding ObjectId}" Width="180"/>
+                        <DataGridTextColumn Header="Image" Binding="{Binding ImagePath}" Width="180"/>
+                        <DataGridTextColumn Header="Dest" Binding="{Binding DestinationIp}" Width="110"/>
+                        <DataGridTextColumn Header="Port" Binding="{Binding DestinationPort}" Width="60"/>
+                        <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="70"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- ===================== POLICY & AUTONOMY CONTROLS ===================== -->
+            <TabItem Header="Policy &amp; Autonomy">
+                <ScrollViewer>
+                    <StackPanel Margin="8" DataContext="{Binding ActivePolicy}">
+                        <TextBlock Text="Every change here is signed with this operator's key and verified by the service before it takes effect. Nothing is applied until you click Save &amp; Apply." Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,10" TextWrapping="Wrap"/>
+
+                        <GroupBox Header="Detection &amp; response engines">
+                            <StackPanel>
+                                <CheckBox Content="Rule engine" IsChecked="{Binding Engines.RuleEngineEnabled}"/>
+                                <CheckBox Content="Anomaly (statistical/ML) engine" IsChecked="{Binding Engines.AnomalyEngineEnabled}"/>
+                                <CheckBox Content="Graph correlation engine" IsChecked="{Binding Engines.GraphEngineEnabled}"/>
+                                <CheckBox Content="Attack-state estimation" IsChecked="{Binding Engines.AttackStateEstimationEnabled}"/>
+                                <CheckBox Content="Autonomy (adaptation-speed) scoring" IsChecked="{Binding Engines.AutonomyScoringEnabled}"/>
+                                <CheckBox Content="Deception / canary detection" IsChecked="{Binding Engines.DeceptionEnabled}"/>
+                                <CheckBox Content="Vulnerability intelligence" IsChecked="{Binding Engines.VulnerabilityIntelEnabled}"/>
+                                <Separator Margin="0,6"/>
+                                <CheckBox Content="Auto-containment (allow Restrict/Contain actions to execute automatically when policy permits)"
+                                          IsChecked="{Binding Engines.AutoContainmentEnabled}" FontWeight="Bold"/>
+                                <CheckBox Content="Virtual mitigation (allow automatic temporary mitigations for known vulnerabilities)"
+                                          IsChecked="{Binding Engines.VirtualMitigationEnabled}"/>
+                                <CheckBox Content="High-impact actions require human approval (recommended: always on)"
+                                          IsChecked="{Binding HighImpactActionsRequireApproval}" FontWeight="Bold"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Response-level thresholds (composite risk score 0-100)">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="140"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="50"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Enrich at" VerticalAlignment="Center"/>
+                                <Slider Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Thresholds.EnrichAt}"/>
+                                <TextBlock Grid.Row="0" Grid.Column="2" Text="{Binding Thresholds.EnrichAt, StringFormat={}{0:F0}}" VerticalAlignment="Center"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Restrict at" VerticalAlignment="Center"/>
+                                <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Thresholds.RestrictAt}"/>
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding Thresholds.RestrictAt, StringFormat={}{0:F0}}" VerticalAlignment="Center"/>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Contain at" VerticalAlignment="Center"/>
+                                <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Thresholds.ContainAt}"/>
+                                <TextBlock Grid.Row="2" Grid.Column="2" Text="{Binding Thresholds.ContainAt, StringFormat={}{0:F0}}" VerticalAlignment="Center"/>
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Enterprise response at" VerticalAlignment="Center"/>
+                                <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Thresholds.EnterpriseResponseAt}"/>
+                                <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding Thresholds.EnterpriseResponseAt, StringFormat={}{0:F0}}" VerticalAlignment="Center"/>
+                            </Grid>
+                        </GroupBox>
+
+                        <GroupBox Header="Emergency playbook (pre-authorized high-impact actions)">
+                            <ItemsControl ItemsSource="{Binding EmergencyPlaybook}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Margin="2" TextWrapping="Wrap">
+                                            <Run Text="{Binding ActionId}" FontWeight="Bold"/>
+                                            <Run Text=" - "/>
+                                            <Run Text="{Binding Description}"/>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </GroupBox>
+
+                        <GroupBox Header="Policy signing key (this operator)">
+                            <StackPanel>
+                                <TextBlock Text="{Binding HasSigningKey, StringFormat='Signing key present: {0}'}"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button Content="Generate New Signing Key" Command="{Binding GenerateSigningKeyCommand}"/>
+                                    <Button Content="Export Public Key for Service Install" Command="{Binding ExportPublicKeyCommand}"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <Button Content="Save &amp; Apply Policy (signs with this operator's key)" HorizontalAlignment="Left" FontWeight="Bold"
+                                Command="{Binding DataContext.SavePolicyCommand, RelativeSource={RelativeSource FindAncestor, AncestorType=Window}}"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================== DECEPTION ===================== -->
+            <TabItem Header="Deception">
+                <DockPanel Margin="8">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <Button Content="Remove Selected Decoy" Command="{Binding RemoveDecoyCommand}" CommandParameter="{Binding SelectedDecoy}"/>
+                    </StackPanel>
+                    <DataGrid ItemsSource="{Binding Decoys}" SelectedItem="{Binding SelectedDecoy}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Id" Binding="{Binding Id}" Width="140"/>
+                            <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="120"/>
+                            <DataGridTextColumn Header="Location" Binding="{Binding Location}" Width="320"/>
+                            <DataGridTextColumn Header="Host scope" Binding="{Binding HostIdScope}" Width="120"/>
+                            <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ===================== VULNERABILITIES ===================== -->
+            <TabItem Header="Vulnerabilities">
+                <DataGrid ItemsSource="{Binding Vulnerabilities}" Margin="8">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Host" Binding="{Binding Record.HostId}" Width="110"/>
+                        <DataGridTextColumn Header="Component" Binding="{Binding Record.Component}" Width="150"/>
+                        <DataGridTextColumn Header="Version" Binding="{Binding Record.InstalledVersion}" Width="90"/>
+                        <DataGridTextColumn Header="CVE" Binding="{Binding Record.CveId}" Width="110"/>
+                        <DataGridTextColumn Header="CVSS" Binding="{Binding Record.SeverityCvss}" Width="60"/>
+                        <DataGridTextColumn Header="Priority" Binding="{Binding PriorityScore, StringFormat={}{0:F0}}" Width="70"/>
+                        <DataGridTextColumn Header="Reachability" Binding="{Binding Record.Reachability}" Width="100"/>
+                        <DataGridTextColumn Header="Exploited?" Binding="{Binding Record.ObservedExploitationAttempt}" Width="80"/>
+                        <DataGridTextColumn Header="Recommended mitigations" Binding="{Binding RecommendedVirtualMitigations[0]}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- ===================== APPROVALS ===================== -->
+            <TabItem Header="Approvals">
+                <DockPanel Margin="8">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <Button Content="Approve &amp; Execute" Command="{Binding ApproveCommand}" CommandParameter="{Binding SelectedApproval}"/>
+                        <Button Content="Reject" Command="{Binding RejectCommand}" CommandParameter="{Binding SelectedApproval}"/>
+                    </StackPanel>
+                    <DataGrid ItemsSource="{Binding PendingApprovals}" SelectedItem="{Binding SelectedApproval}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Requested" Binding="{Binding RequestedAt}" Width="150"/>
+                            <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="120"/>
+                            <DataGridTextColumn Header="Alert" Binding="{Binding AlertId}" Width="260"/>
+                            <DataGridTextColumn Header="Requested Level" Binding="{Binding RequestedLevel}" Width="130"/>
+                            <DataGridTextColumn Header="Rationale" Binding="{Binding Rationale[0]}" Width="*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- Bottom status bar -->
+        <StatusBar Grid.Row="2" Background="Transparent">
+            <StatusBarItem>
+                <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource MutedTextBrush}"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
