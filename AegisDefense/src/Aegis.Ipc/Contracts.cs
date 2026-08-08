@@ -31,6 +31,7 @@ public static class MessageTypes
     public const string GetServiceHealth = "GetServiceHealth";
     public const string VerifyEventChain = "VerifyEventChain";
     public const string WhoAmI = "WhoAmI";
+    public const string GetHostInventory = "GetHostInventory";
 }
 
 public sealed record GetAlertsRequest(string? HostId, AlertStatus? StatusFilter, int Take = 200);
@@ -102,3 +103,7 @@ public sealed record VerifyEventChainResponse(bool Valid, long? FirstBrokenSeque
 
 public sealed record WhoAmIRequest;
 public sealed record WhoAmIResponse(OperatorRole Role, string? WindowsIdentity);
+
+public sealed record HostInventoryEntry(string HostId, DateTimeOffset LastSeen, int EventCount24h, string? CurrentAttackState, int OpenAlertCount);
+public sealed record GetHostInventoryRequest;
+public sealed record GetHostInventoryResponse(IReadOnlyList<HostInventoryEntry> Hosts);

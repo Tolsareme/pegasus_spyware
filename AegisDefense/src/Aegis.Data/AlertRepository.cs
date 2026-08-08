@@ -97,6 +97,18 @@ ON CONFLICT(alert_id) DO UPDATE SET
         return Convert.ToInt32(result);
     }
 
+    public async Task<IReadOnlyDictionary<string, int>> GetOpenCountsByHostAsync(CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT host_id, COUNT(*) FROM alerts WHERE status NOT IN ('Resolved','FalsePositive') GROUP BY host_id;";
+
+        var results = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false)) results[reader.GetString(0)] = reader.GetInt32(1);
+        return results;
+    }
+
     public async Task<int> CountOpenAsync(CancellationToken ct = default)
     {
         using var connection = _db.OpenConnection();

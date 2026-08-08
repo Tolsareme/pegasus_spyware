@@ -115,6 +115,23 @@ VALUES
         return Convert.ToInt32(result);
     }
 
+    /// <summary>Per-host event count and last-seen timestamp since <paramref name="since"/> - the data behind the GUI's Hosts inventory tab.</summary>
+    public async Task<IReadOnlyDictionary<string, (int Count, DateTimeOffset LastSeen)>> GetHostSummariesAsync(DateTimeOffset since, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT host_id, COUNT(*), MAX(timestamp) FROM events WHERE timestamp >= $since GROUP BY host_id;";
+        cmd.Parameters.AddWithValue("$since", since.ToString("O"));
+
+        var results = new Dictionary<string, (int, DateTimeOffset)>(StringComparer.OrdinalIgnoreCase);
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            results[reader.GetString(0)] = (reader.GetInt32(1), DateTimeOffset.Parse(reader.GetString(2)));
+        }
+        return results;
+    }
+
     public async Task<IReadOnlyList<string>> DistinctHostIdsAsync(CancellationToken ct = default)
     {
         using var connection = _db.OpenConnection();

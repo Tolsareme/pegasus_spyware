@@ -19,6 +19,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>Aegis.Gui</RootNamespace>
     <AssemblyName>AegisDefenseConsole</AssemblyName>
     <OutputType>WinExe</OutputType>
@@ -33,6 +34,20 @@
   <ItemGroup>
     <!-- System.Security.Cryptography.ProtectedData (DPAPI) lives in this framework assembly on net48, not in the default reference set. -->
     <Reference Include="System.Security" />
+  </ItemGroup>
+
+  <!--
+    UseWindowsForms (added for the v2 tray icon - see Services/TrayIconService.cs) makes the
+    SDK add global implicit usings for System.Windows.Forms and System.Drawing project-wide,
+    alongside UseWPF's System.Windows/System.Windows.Media ones - and both frameworks define
+    types with the same short name (Application, MessageBox, Color, Point, ...). Removing
+    these two specifically keeps every existing WPF-facing file unambiguous; TrayIconService.cs
+    adds its own local `using System.Windows.Forms;` and fully-qualifies the one System.Drawing
+    reference it needs.
+  -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
   </ItemGroup>
 
 </Project>

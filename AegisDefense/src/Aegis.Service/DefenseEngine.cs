@@ -528,6 +528,24 @@ public sealed class DefenseEngine
     public Task<IReadOnlyList<PendingApproval>> GetPendingApprovalsAsync() => _approvals.ListPendingAsync();
     public Task<IReadOnlyList<VulnerabilityPriority>> GetVulnerabilitiesAsync(string? hostId) => _vulnerabilities.QueryAsync(hostId);
     public IReadOnlyList<DecoyResourceDefinition> ListDecoys() => _deception.Decoys;
+
+    public async Task<IReadOnlyList<Ipc.Contracts.HostInventoryEntry>> GetHostInventoryAsync()
+    {
+        var since = DateTimeOffset.UtcNow.AddHours(-24);
+        var summaries = await _events.GetHostSummariesAsync(since).ConfigureAwait(false);
+        var openCounts = await _alerts.GetOpenCountsByHostAsync().ConfigureAwait(false);
+        var states = _stateEstimator.GetCurrentStates();
+
+        return summaries
+            .Select(kv => new Ipc.Contracts.HostInventoryEntry(
+                HostId: kv.Key,
+                LastSeen: kv.Value.LastSeen,
+                EventCount24h: kv.Value.Count,
+                CurrentAttackState: states.TryGetValue(kv.Key, out var state) ? state.ToString() : null,
+                OpenAlertCount: openCounts.TryGetValue(kv.Key, out var count) ? count : 0))
+            .OrderByDescending(h => h.LastSeen)
+            .ToList();
+    }
     public (IReadOnlyList<GraphNode> Nodes, IReadOnlyList<GraphEdge> Edges) GetGraphNeighborhood(string nodeId, int maxHops)
     {
         var nodes = _graph.Neighborhood(nodeId, maxHops);

@@ -146,6 +146,11 @@ public sealed class IpcRequestHandler
                 {
                     return request.CreateResponse(MessageTypes.WhoAmI, new WhoAmIResponse(role, callerRoleRaw));
                 }
+                case MessageTypes.GetHostInventory:
+                {
+                    var hosts = await _engine.GetHostInventoryAsync().ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.GetHostInventory, new GetHostInventoryResponse(hosts));
+                }
                 default:
                     return request.CreateErrorResponse($"Unknown message type '{request.MessageType}'.");
             }

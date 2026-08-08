@@ -57,6 +57,19 @@
                             </GroupBox>
                         </UniformGrid>
 
+                        <UniformGrid Columns="2">
+                            <GroupBox Header="Hosts in non-benign state, trend (last 5 min)">
+                                <Canvas Width="400" Height="80" Background="{StaticResource PanelBrush}">
+                                    <Polyline Points="{Binding RiskTrendPoints}" Stroke="{StaticResource AccentBrush}" StrokeThickness="2"/>
+                                </Canvas>
+                            </GroupBox>
+                            <GroupBox Header="Alerts (24h running total), trend (last 5 min)">
+                                <Canvas Width="400" Height="80" Background="{StaticResource PanelBrush}">
+                                    <Polyline Points="{Binding AlertTrendPoints}" Stroke="{StaticResource WarnBrush}" StrokeThickness="2"/>
+                                </Canvas>
+                            </GroupBox>
+                        </UniformGrid>
+
                         <GroupBox Header="Engine status (control these from the Policy &amp; Autonomy tab)">
                             <ItemsControl ItemsSource="{Binding Statistics.Engines}">
                                 <ItemsControl.ItemTemplate>
@@ -141,6 +154,75 @@
                         <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="70"/>
                     </DataGrid.Columns>
                 </DataGrid>
+            </TabItem>
+
+            <!-- ===================== HOST INVENTORY ===================== -->
+            <TabItem Header="Hosts">
+                <DataGrid ItemsSource="{Binding Hosts}" Margin="8">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="160"/>
+                        <DataGridTextColumn Header="Last Seen" Binding="{Binding LastSeen}" Width="150"/>
+                        <DataGridTextColumn Header="Events (24h)" Binding="{Binding EventCount24h}" Width="100"/>
+                        <DataGridTextColumn Header="Attack State" Binding="{Binding CurrentAttackState}" Width="130"/>
+                        <DataGridTextColumn Header="Open Alerts" Binding="{Binding OpenAlertCount}" Width="100"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+
+            <!-- ===================== ATTACK GRAPH ===================== -->
+            <TabItem Header="Attack Graph">
+                <DockPanel Margin="8">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <TextBlock Text="Node id (host, process, identity, destination, decoy...):" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox Width="260" Text="{Binding GraphNodeIdInput, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"/>
+                        <Button Content="Load Neighborhood" Command="{Binding LoadGraphCommand}"/>
+                    </StackPanel>
+                    <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap"
+                               Text="Shows the searched node (teal, center) and everything up to two hops away in the attack-state graph - who logged onto what, what spawned what, what connected where. Try a host id from the Hosts tab, or a process/destination id you saw in the Events tab."/>
+                    <Border BorderBrush="#3A3C4A" BorderThickness="1">
+                        <Grid>
+                            <ItemsControl ItemsSource="{Binding PositionedGraphEdges}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas Width="640" Height="520" Background="{StaticResource PanelBrush}"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}"
+                                              Stroke="#5A5D6E" StrokeThickness="1" ToolTip="{Binding Label}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <ItemsControl ItemsSource="{Binding PositionedGraphNodes}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas Width="640" Height="520"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                        <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel ToolTip="{Binding Id}">
+                                            <Ellipse Width="16" Height="16" Stroke="White" StrokeThickness="0.5">
+                                                <Ellipse.Fill>
+                                                    <SolidColorBrush Color="{Binding Fill}"/>
+                                                </Ellipse.Fill>
+                                            </Ellipse>
+                                            <TextBlock Text="{Binding ShortLabel}" FontSize="9" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </Border>
+                </DockPanel>
             </TabItem>
 
             <!-- ===================== POLICY & AUTONOMY CONTROLS ===================== -->
