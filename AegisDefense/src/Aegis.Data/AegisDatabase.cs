@@ -43,7 +43,12 @@ public sealed class AegisDatabase : IDisposable
 
     public static AegisDatabase OpenInMemoryForTests()
     {
-        var connectionString = "Data Source=file:aegis-tests?mode=memory&cache=shared";
+        // The name must be unique per call, not just per process: SQLite's shared-cache mode
+        // makes every connection using the same "file:<name>?mode=memory&cache=shared" string
+        // see the *same* database, so a fixed name here would silently leak state between
+        // unrelated tests (each xUnit test class/method creates its own AegisDatabase
+        // instance and expects a fresh, isolated database).
+        var connectionString = $"Data Source=file:aegis-tests-{Guid.NewGuid():N}?mode=memory&cache=shared";
         var keepAlive = new SqliteConnection(connectionString);
         keepAlive.Open();
 
@@ -67,9 +72,12 @@ public sealed class AegisDatabase : IDisposable
     private void InitializeSchema()
     {
         using var connection = OpenConnection();
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = Schema.CreateStatements;
-        cmd.ExecuteNonQuery();
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = Schema.CreateStatements;
+            cmd.ExecuteNonQuery();
+        }
+        SchemaMigrator.Migrate(connection);
     }
 
     public void Dispose() => _keepAliveConnection?.Dispose();

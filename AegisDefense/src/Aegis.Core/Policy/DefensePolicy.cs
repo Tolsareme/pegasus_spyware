@@ -26,6 +26,17 @@ public sealed class ResponseThresholds
     public double EnterpriseResponseAt { get; set; } = 85;
 }
 
+/// <summary>Where (if anywhere) alerts and audit entries are forwarded as CEF-over-syslog (v2) - see <see cref="Aegis.Core.Siem.ISiemForwarder"/>.</summary>
+public sealed class SiemForwardingSettings
+{
+    public bool Enabled { get; set; } = false;
+    public string? Host { get; set; }
+    public int Port { get; set; } = 514;
+    public bool UseTcp { get; set; } = false;
+    /// <summary>Included in every forwarded CEF header as the reporting device's product/vendor identity.</summary>
+    public string DeviceVendor { get; set; } = "AegisDefense";
+}
+
 /// <summary>
 /// A specific high-impact action pre-authorized to run without live human sign-off, e.g.
 /// "isolate a designated test endpoint" from the MVP scope (doc §24). Anything not
@@ -55,6 +66,12 @@ public sealed class DefensePolicy
     public ResponseThresholds Thresholds { get; set; } = new();
     public bool HighImpactActionsRequireApproval { get; set; } = true;
     public List<EmergencyPlaybookEntry> EmergencyPlaybook { get; set; } = new();
+
+    /// <summary>Raw events older than this are pruned (v2 retention/rollup); alerts and the audit log are never pruned by this setting. 0 disables pruning.</summary>
+    public int EventRetentionDays { get; set; } = 90;
+
+    /// <summary>SIEM forwarding target (v2). Null/empty host disables forwarding.</summary>
+    public SiemForwardingSettings Siem { get; set; } = new();
 
     public AutonomyScoreWeights AutonomyWeights { get; set; } = AutonomyScoreWeights.Default;
     public HostRiskWeights RiskWeights { get; set; } = HostRiskWeights.Default;

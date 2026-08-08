@@ -60,6 +60,7 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     public RelayCommand GenerateSigningKeyCommand { get; }
     public RelayCommand ExportPublicKeyCommand { get; }
     public RelayCommand RemoveDecoyCommand { get; }
+    public RelayCommand VerifyEventChainCommand { get; }
 
     public MainViewModel()
     {
@@ -73,6 +74,7 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
         GenerateSigningKeyCommand = new RelayCommand(_ => GenerateSigningKey());
         ExportPublicKeyCommand = new RelayCommand(_ => ExportPublicKey());
         RemoveDecoyCommand = new RelayCommand(p => RemoveDecoyAsync(p as DecoyResourceDefinition));
+        VerifyEventChainCommand = new RelayCommand(_ => VerifyEventChainAsync());
 
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _refreshTimer.Tick += async (_, _) => await RefreshAllAsync().ConfigureAwait(true);
@@ -179,6 +181,27 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
         await _client.RequestAsync<RejectActionRequest, RejectActionResponse>(
             MessageTypes.RejectAction, new RejectActionRequest(approval.ApprovalId, Environment.UserName, "Rejected via console")).ConfigureAwait(true);
         await RefreshAllAsync().ConfigureAwait(true);
+    }
+
+    private async Task VerifyEventChainAsync()
+    {
+        if (_client is null) return;
+        try
+        {
+            var result = await _client.RequestAsync<VerifyEventChainRequest, VerifyEventChainResponse>(
+                MessageTypes.VerifyEventChain, new VerifyEventChainRequest()).ConfigureAwait(true);
+
+            StatusMessage = result.Valid
+                ? $"Event chain verified: {result.LinksChecked} records, no tampering detected."
+                : $"TAMPER DETECTED at sequence {result.FirstBrokenSequence} ({result.BreakReason}) - {result.LinksChecked} records checked before the break.";
+
+            MessageBox.Show(StatusMessage, "Event Chain Integrity",
+                MessageBoxButton.OK, result.Valid ? MessageBoxImage.Information : MessageBoxImage.Error);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Chain verification failed: {ex.Message}";
+        }
     }
 
     private async Task RemoveDecoyAsync(DecoyResourceDefinition? decoy)

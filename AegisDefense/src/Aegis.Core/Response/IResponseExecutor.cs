@@ -37,8 +37,14 @@ public interface IResponseExecutor
 
     Task<ResponseActionResult> IncreaseTelemetryAsync(string hostId, TimeSpan duration, CancellationToken ct = default);
 
-    /// <summary>Deliberately unimplemented by default (returns Success=false) - credential revocation requires an
-    /// organization-specific identity workflow (AD PowerShell, Entra ID Graph, etc.) that must be wired in explicitly
-    /// rather than assumed, per doc §17's "authorized identity workflow" requirement.</summary>
+    /// <summary>Disables the identity's authentication capability through the configured identity workflow (doc §17:
+    /// "authorized identity workflow"). See <c>Aegis.ResponseActions.ActiveDirectoryCredentialRevoker</c> (v2) for a
+    /// real Active Directory implementation; on a non-domain-joined host or when no identity provider is configured
+    /// this returns <c>Success=false</c> with an explanatory detail rather than silently no-op'ing.</summary>
     Task<ResponseActionResult> RevokeCredentialAsync(string hostId, string identity, CancellationToken ct = default);
+
+    /// <summary>Reverses <see cref="RevokeCredentialAsync"/> (re-enables the account). Password expiry itself can't
+    /// be "undone" - the user still has to set a new password - but access is restored, matching the doc's
+    /// reversibility requirement for automated actions wherever the underlying action allows it.</summary>
+    Task<ResponseActionResult> RestoreCredentialAsync(string hostId, string identity, CancellationToken ct = default);
 }

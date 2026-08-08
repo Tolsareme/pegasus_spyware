@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <Reference Include="System.ServiceProcess" />
+    <!-- System.Security.Cryptography.ProtectedData (DPAPI) for EventChainKeyStore. -->
+    <Reference Include="System.Security" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(MSBuildRuntimeType)' == 'Core' AND !$([MSBuild]::IsOSPlatform('Windows'))">

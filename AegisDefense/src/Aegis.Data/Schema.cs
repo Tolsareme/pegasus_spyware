@@ -27,10 +27,19 @@ CREATE TABLE IF NOT EXISTS events (
     confidence REAL NOT NULL,
     raw_event_reference TEXT NULL,
     command_line TEXT NULL,
-    tags_json TEXT NULL
+    tags_json TEXT NULL,
+    sequence INTEGER NULL,
+    chain_hash TEXT NULL,
+    prev_chain_hash TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_events_host_time ON events(host_id, timestamp);
 CREATE INDEX IF NOT EXISTS ix_events_time ON events(timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_events_sequence ON events(sequence);
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id TEXT PRIMARY KEY,

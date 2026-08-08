@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Aegis.Core.Events;
+using Aegis.Core.Integrity;
 using Microsoft.Data.Sqlite;
 
 namespace Aegis.Data;
@@ -11,7 +12,13 @@ public sealed class EventRepository
 
     public EventRepository(AegisDatabase db) => _db = db;
 
-    public async Task InsertAsync(NormalizedEvent evt, CancellationToken ct = default)
+    /// <summary>
+    /// Inserts one event. <paramref name="sequence"/>/<paramref name="chainHash"/>/
+    /// <paramref name="prevChainHash"/> are optional so callers that don't care about the
+    /// tamper-evidence chain (e.g. most unit tests) can omit them; <c>DefenseEngine</c>
+    /// always supplies them in production.
+    /// </summary>
+    public async Task InsertAsync(NormalizedEvent evt, long? sequence = null, string? chainHash = null, string? prevChainHash = null, CancellationToken ct = default)
     {
         using var connection = _db.OpenConnection();
         using var cmd = connection.CreateCommand();
@@ -20,15 +27,58 @@ INSERT OR REPLACE INTO events
  (event_id, timestamp, host_id, user_id, process_id, parent_process_id, process_hash, signer,
   image_path, parent_image_path, host_role, logon_type, action_type, object_type, object_id,
   source_ip, destination_ip, destination_port, privilege_context, result, confidence,
-  raw_event_reference, command_line, tags_json)
+  raw_event_reference, command_line, tags_json, sequence, chain_hash, prev_chain_hash)
 VALUES
  ($event_id, $timestamp, $host_id, $user_id, $process_id, $parent_process_id, $process_hash, $signer,
   $image_path, $parent_image_path, $host_role, $logon_type, $action_type, $object_type, $object_id,
   $source_ip, $destination_ip, $destination_port, $privilege_context, $result, $confidence,
-  $raw_event_reference, $command_line, $tags_json);";
+  $raw_event_reference, $command_line, $tags_json, $sequence, $chain_hash, $prev_chain_hash);";
 
         BindEvent(cmd, evt);
+        cmd.Parameters.AddWithValue("$sequence", (object?)sequence ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$chain_hash", (object?)chainHash ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$prev_chain_hash", (object?)prevChainHash ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Last-written chain link, used to resume the hash chain across service restarts. Null if no chained event has ever been written.</summary>
+    public async Task<(long Sequence, string ChainHash)?> GetLastChainLinkAsync(CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT sequence, chain_hash FROM events WHERE sequence IS NOT NULL ORDER BY sequence DESC LIMIT 1;";
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+        return (reader.GetInt64(0), reader.GetString(1));
+    }
+
+    /// <summary>Every chained event in ascending sequence order, for <see cref="Aegis.Core.Integrity.EventChainVerifier"/>.</summary>
+    public async Task<IReadOnlyList<(long Sequence, string PreviousHash, string ChainHash, NormalizedEvent Event)>> GetChainAsync(CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT * FROM events WHERE sequence IS NOT NULL ORDER BY sequence ASC;";
+
+        var results = new List<(long, string, string, NormalizedEvent)>();
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var sequence = reader.GetInt64(reader.GetOrdinal("sequence"));
+            var chainHash = reader.GetString(reader.GetOrdinal("chain_hash"));
+            var prevHash = GetNullableString(reader, "prev_chain_hash") ?? EventChainSigner.GenesisHash;
+            results.Add((sequence, prevHash, chainHash, ReadEvent(reader)));
+        }
+        return results;
+    }
+
+    /// <summary>Deletes raw events older than <paramref name="cutoff"/> (retention/rollup - doc v2). Alerts and the audit log are never pruned by this; only the raw telemetry that backs them, so old alerts may end up with evidence-event references that no longer resolve - expected and documented in docs/OPERATIONS.md.</summary>
+    public async Task<int> PruneOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM events WHERE timestamp < $cutoff;";
+        cmd.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<NormalizedEvent>> QueryAsync(string? hostId = null, DateTimeOffset? since = null, int take = 500, CancellationToken ct = default)

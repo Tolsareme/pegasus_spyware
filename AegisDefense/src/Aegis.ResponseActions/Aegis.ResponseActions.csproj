@@ -33,6 +33,8 @@
   <ItemGroup>
     <Reference Include="System.ServiceProcess" />
     <Reference Include="System.Management" />
+    <!-- Active Directory identity workflow for RevokeCredentialAsync/RestoreCredentialAsync (v2). -->
+    <Reference Include="System.DirectoryServices.AccountManagement" />
   </ItemGroup>
 
   <!-- Lets `dotnet build` resolve net48 reference assemblies on a non-Windows dev/CI machine for syntax/type checking. Harmless (and unnecessary) on real Windows with Visual Studio / Build Tools installed. -->

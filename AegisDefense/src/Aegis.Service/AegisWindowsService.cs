@@ -45,10 +45,11 @@ public sealed class ServiceHost
 
         _db = AegisDatabase.OpenFile(ServiceConfig.DatabasePath);
         var trustStore = new PolicyTrustStore(ServiceConfig.TrustedPolicyPublicKeyPath, _logger);
+        var chainKey = new EventChainKeyStore(ServiceConfig.EventChainKeyPath, _logger).LoadOrCreate();
         var hostId = HostIdentity.GetHostId();
         var responseExecutor = new WindowsResponseExecutor(hostId, _logger);
 
-        _engine = new DefenseEngine(_logger, _db, responseExecutor, trustStore);
+        _engine = new DefenseEngine(_logger, _db, responseExecutor, trustStore, chainKey);
         await _engine.StartAsync().ConfigureAwait(false);
 
         var requestHandler = new IpcRequestHandler(_engine, _logger);

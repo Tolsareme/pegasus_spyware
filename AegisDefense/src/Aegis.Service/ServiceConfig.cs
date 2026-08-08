@@ -12,5 +12,7 @@ public static class ServiceConfig
 
     public static string TrustedPolicyPublicKeyPath => Path.Combine(RootDirectory, "keys", "policy-trusted-public.xml");
 
+    public static string EventChainKeyPath => Path.Combine(RootDirectory, "keys", "event-chain.key.protected");
+
     public const string ServiceName = "AegisDefenseService";
 }

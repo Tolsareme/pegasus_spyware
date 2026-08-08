@@ -1,16 +1,20 @@
+using Aegis.Core.Anomaly;
 using Aegis.Core.Deception;
 using Aegis.Core.Diagnostics;
 using Aegis.Core.Estimation;
 using Aegis.Core.Events;
 using Aegis.Core.Features;
 using Aegis.Core.Graph;
+using Aegis.Core.Integrity;
 using Aegis.Core.Policy;
 using Aegis.Core.Response;
 using Aegis.Core.Rules;
 using Aegis.Core.Scoring;
+using Aegis.Core.Siem;
 using Aegis.Core.Vulnerability;
 using Aegis.Data;
 using Aegis.Sensor;
+using System.Threading;
 
 namespace Aegis.Service;
 
@@ -42,15 +46,27 @@ public sealed class DefenseEngine
     private readonly AttackStateEstimator _stateEstimator = new();
     private readonly ResponsePolicyEngine _responsePolicyEngine = new();
     private readonly IProcessBaseline _baseline = new InMemoryProcessBaseline();
+    private readonly IAnomalyModel _anomalyModel = new StatisticalAnomalyModel();
+
+    /// <summary>An anomaly score at or above this level, on its own, is enough to raise an alert even with zero rule findings - otherwise the "statistical/ML engine" (doc §8) could never independently catch anything the deterministic rules missed.</summary>
+    private const double AnomalyOnlyAlertThreshold = 0.6;
     private readonly Dictionary<string, HostBehaviorProfile> _hostProfiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _profileLock = new();
+
+    private readonly byte[] _chainKey;
+    private readonly object _chainLock = new();
+    private long _chainSequence;
+    private string _chainPrevHash = EventChainSigner.GenesisHash;
+
+    private ISiemForwarder _siemForwarder = new NullSiemForwarder();
+    private Timer? _retentionTimer;
 
     private DefensePolicy _activePolicy = DefensePolicy.CreateDefault("service-startup-default");
     public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
 
     public string HostId => _collectors.HostId;
 
-    public DefenseEngine(IAegisLogger logger, AegisDatabase db, IResponseExecutor responseExecutor, PolicyTrustStore trustStore)
+    public DefenseEngine(IAegisLogger logger, AegisDatabase db, IResponseExecutor responseExecutor, PolicyTrustStore trustStore, byte[] chainKey)
     {
         _logger = logger;
         _db = db;
@@ -63,6 +79,7 @@ public sealed class DefenseEngine
         _trustStore = trustStore;
         _responseExecutor = responseExecutor;
         _collectors = new CollectorHost(logger);
+        _chainKey = chainKey;
     }
 
     public async Task StartAsync()
@@ -83,11 +100,80 @@ public sealed class DefenseEngine
             _deception.RegisterDecoy(decoy);
         }
 
+        var lastLink = await _events.GetLastChainLinkAsync().ConfigureAwait(false);
+        if (lastLink is { } link)
+        {
+            _chainSequence = link.Sequence + 1;
+            _chainPrevHash = link.ChainHash;
+            _logger.Info(nameof(DefenseEngine), $"Resuming event integrity chain at sequence {_chainSequence}.");
+        }
+
+        ApplySiemSettings(_activePolicy.Siem);
+        _retentionTimer = new Timer(_ => _ = RunRetentionAsync(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(6));
+
         _collectors.Start(evt => _ = HandleEventAsync(evt));
         _logger.Info(nameof(DefenseEngine), $"Defense engine started for host '{HostId}' (role: {_collectors.HostRole}).");
     }
 
-    public void Stop() => _collectors.Stop();
+    public void Stop()
+    {
+        _collectors.Stop();
+        _retentionTimer?.Dispose();
+    }
+
+    private async Task RunRetentionAsync()
+    {
+        try
+        {
+            var days = _activePolicy.EventRetentionDays;
+            if (days <= 0) return; // 0 = retention disabled, keep everything
+
+            var cutoff = DateTimeOffset.UtcNow.AddDays(-days);
+            var deleted = await _events.PruneOlderThanAsync(cutoff).ConfigureAwait(false);
+            if (deleted > 0)
+            {
+                _logger.LogAudit(nameof(DefenseEngine), "EventRetentionPrune", HostId, "Success", $"Deleted {deleted} raw events older than {days}d (before {cutoff:O}).");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(nameof(DefenseEngine), "Event retention pruning failed.", ex);
+        }
+    }
+
+    private void ApplySiemSettings(SiemForwardingSettings settings)
+    {
+        (_siemForwarder as IDisposable)?.Dispose();
+        _siemForwarder = settings.Enabled && !string.IsNullOrWhiteSpace(settings.Host)
+            ? new CefSyslogForwarder(settings.Host!, settings.Port, settings.UseTcp, settings.DeviceVendor)
+            : new NullSiemForwarder();
+    }
+
+    /// <summary>Recomputes the entire on-disk event chain and reports the first tampered/missing record, if any (v2 - doc §26 telemetry-poisoning control).</summary>
+    public async Task<ChainVerificationResult> VerifyEventChainAsync()
+    {
+        var chain = await _events.GetChainAsync().ConfigureAwait(false);
+        var result = EventChainVerifier.Verify(_chainKey, chain);
+        _logger.LogAudit(nameof(DefenseEngine), "VerifyEventChain", HostId, result.Valid ? "Valid" : "TAMPER_DETECTED",
+            result.Valid ? $"{result.LinksChecked} links verified." : $"Break at sequence {result.FirstBrokenSequence}: {result.BreakReason}.");
+        return result;
+    }
+
+    /// <summary>Thread-safe: collectors can call HandleEventAsync concurrently from different collector callbacks, and each event needs a strictly increasing, gap-free sequence number.</summary>
+    private (long Sequence, string PreviousHash, string ChainHash) SignNextChainLink(NormalizedEvent evt)
+    {
+        lock (_chainLock)
+        {
+            var sequence = _chainSequence;
+            var prevHash = _chainPrevHash;
+            var chainHash = EventChainSigner.ComputeLink(_chainKey, sequence, prevHash, evt);
+
+            _chainSequence = sequence + 1;
+            _chainPrevHash = chainHash;
+
+            return (sequence, prevHash, chainHash);
+        }
+    }
 
     public DefensePolicy GetActivePolicy() => _activePolicy;
 
@@ -101,6 +187,7 @@ public sealed class DefenseEngine
 
         await _policies.SetActiveAsync(signedPolicy).ConfigureAwait(false);
         _activePolicy = signedPolicy;
+        ApplySiemSettings(signedPolicy.Siem);
         _logger.LogAudit(nameof(DefenseEngine), "PolicyUpdate", HostId, "Success", $"Applied policy '{signedPolicy.PolicyId}' v{signedPolicy.Version} issued by '{signedPolicy.Issuer}'.");
         return (true, null);
     }
@@ -111,7 +198,8 @@ public sealed class DefenseEngine
         {
             var evt = (_activePolicy.Engines.DeceptionEnabled ? _deception.TryClassifyCanaryAccess(rawEvent) : null) ?? rawEvent;
 
-            await _events.InsertAsync(evt).ConfigureAwait(false);
+            var (sequence, prevHash, chainHash) = SignNextChainLink(evt);
+            await _events.InsertAsync(evt, sequence, chainHash, prevHash).ConfigureAwait(false);
 
             if (_activePolicy.Engines.GraphEngineEnabled)
             {
@@ -124,6 +212,16 @@ public sealed class DefenseEngine
                 ? _ruleEngine.Evaluate(new RuleContext(evt, snapshot))
                 : Array.Empty<RuleFinding>();
 
+            // Statistical/ML engine (doc §8): learn this host's normal, then score this
+            // observation against it. Observe-then-score means today's point never scores
+            // itself as anomalous relative to a baseline it just widened.
+            var anomaly = new AnomalyScoreResult(0.0, false, Array.Empty<AnomalyFeatureContribution>());
+            if (_activePolicy.Engines.AnomalyEngineEnabled)
+            {
+                _anomalyModel.Observe(evt.HostId, snapshot);
+                anomaly = _anomalyModel.Score(evt.HostId, snapshot);
+            }
+
             AttackStateSnapshot? stateSnapshot = null;
             if (_activePolicy.Engines.AttackStateEstimationEnabled)
             {
@@ -131,19 +229,25 @@ public sealed class DefenseEngine
                 await ActOnPrediction(evt.HostId, stateSnapshot).ConfigureAwait(false);
             }
 
-            if (findings.Count == 0) return; // nothing rose to alert-worthy - still stored/graphed/estimated above
+            // Nothing rose to alert-worthy - still stored/graphed/estimated/baselined above.
+            // A high enough anomaly score can raise an alert on its own (no rule finding
+            // required) - otherwise the ML engine could never independently catch anything
+            // the deterministic rules missed, defeating the point of running both (doc §8).
+            if (findings.Count == 0 && anomaly.Score < AnomalyOnlyAlertThreshold) return;
 
             var vulnerabilityExposure = await GetVulnerabilityExposureAsync(evt.HostId).ConfigureAwait(false);
             var attackSequenceScore = stateSnapshot is { CurrentState: not AttackState.Benign } s ? s.Confidence : 0.0;
 
-            var risk = HostRiskCalculator.Compute(snapshot, findings, mlAnomalyScore: 0.0,
+            var risk = HostRiskCalculator.Compute(snapshot, findings, mlAnomalyScore: anomaly.Score,
                 vulnerabilityExposureScore: vulnerabilityExposure, attackSequenceScore: attackSequenceScore,
                 weights: _activePolicy.RiskWeights);
 
-            var alert = BuildAlert(evt, findings, risk, stateSnapshot);
+            var alert = BuildAlert(evt, findings, risk, stateSnapshot, anomaly);
             await _alerts.UpsertAsync(alert).ConfigureAwait(false);
 
             await DecideAndActAsync(alert, risk).ConfigureAwait(false);
+
+            await _siemForwarder.ForwardAlertAsync(alert).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -171,9 +275,9 @@ public sealed class DefenseEngine
         return vulns.Count == 0 ? 0.0 : Math.Min(1.0, vulns.Max(v => v.PriorityScore) / 100.0);
     }
 
-    private static Alert BuildAlert(NormalizedEvent evt, IReadOnlyList<RuleFinding> findings, HostRiskBreakdown risk, AttackStateSnapshot? stateSnapshot)
+    private static Alert BuildAlert(NormalizedEvent evt, IReadOnlyList<RuleFinding> findings, HostRiskBreakdown risk, AttackStateSnapshot? stateSnapshot, AnomalyScoreResult anomaly)
     {
-        var topFinding = findings.OrderByDescending(f => f.Severity).ThenByDescending(f => f.Confidence).First();
+        var topFinding = findings.OrderByDescending(f => f.Severity).ThenByDescending(f => f.Confidence).FirstOrDefault();
         var severity = risk.Total switch
         {
             >= 85 => AlertSeverity.Critical,
@@ -182,14 +286,20 @@ public sealed class DefenseEngine
             _ => AlertSeverity.Low,
         };
 
+        // No rule finding at all means this alert exists purely because the statistical
+        // engine flagged a deviation from this host's own learned baseline.
+        var title = topFinding?.Name ?? "Statistical deviation from host baseline";
+        var source = findings.Count > 0 ? string.Join(",", findings.Select(f => f.RuleId).Distinct()) : "AEG-ML-ANOMALY";
+        var estimatedState = stateSnapshot?.CurrentState ?? topFinding?.StateHint ?? AttackState.Benign;
+
         var alert = new Alert
         {
             HostId = evt.HostId,
             UserId = evt.UserId,
-            Title = topFinding.Name,
-            Source = string.Join(",", findings.Select(f => f.RuleId).Distinct()),
+            Title = title,
+            Source = source,
             Severity = severity,
-            EstimatedState = stateSnapshot?.CurrentState ?? topFinding.StateHint,
+            EstimatedState = estimatedState,
             Confidence = risk.Confidence,
             RiskBreakdown = risk,
             RecommendedResponse = ResponseLevel.Observe, // filled in by caller once the policy engine decides
@@ -199,6 +309,13 @@ public sealed class DefenseEngine
         {
             alert.EvidenceEventIds.Add(f.TriggeringEventId);
             alert.EvidenceSummary.Add($"[{f.RuleId}] {f.Description}");
+        }
+
+        if (anomaly.IsWarmedUp && anomaly.TopContributors.Count > 0)
+        {
+            alert.EvidenceEventIds.Add(evt.EventId);
+            var detail = string.Join(", ", anomaly.TopContributors.Select(c => $"{c.Feature}={c.Value:F2} (baseline {c.Mean:F2}±{c.StdDev:F2}, z={c.ZScore:F1})"));
+            alert.EvidenceSummary.Add($"[AEG-ML-ANOMALY] score={anomaly.Score:F2} vs. host baseline - {detail}");
         }
 
         return alert;

@@ -103,7 +103,13 @@ public sealed class IpcRequestHandler
                 case MessageTypes.GetServiceHealth:
                 {
                     return request.CreateResponse(MessageTypes.GetServiceHealth,
-                        new GetServiceHealthResponse(true, "1.0.0", _engine.StartedAt, Array.Empty<string>()));
+                        new GetServiceHealthResponse(true, "2.0.0", _engine.StartedAt, Array.Empty<string>()));
+                }
+                case MessageTypes.VerifyEventChain:
+                {
+                    var result = await _engine.VerifyEventChainAsync().ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.VerifyEventChain,
+                        new VerifyEventChainResponse(result.Valid, result.FirstBrokenSequence, result.BreakReason.ToString(), result.LinksChecked));
                 }
                 default:
                     return request.CreateErrorResponse($"Unknown message type '{request.MessageType}'.");

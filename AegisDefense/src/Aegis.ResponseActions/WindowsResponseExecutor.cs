@@ -26,14 +26,17 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
     private readonly string _hostId;
     private readonly IAegisLogger _logger;
     private readonly int[] _managementPorts;
+    private readonly ICredentialRevoker _credentialRevoker;
 
     /// <param name="hostId">This machine's identity as known to the fleet (should match the sensor's HostId so audit/graph correlation lines up).</param>
     /// <param name="managementPorts">TCP ports that must remain reachable through an isolation action so the service/GUI/central console can still manage the box (doc §24: "isolate a test endpoint while preserving management connectivity"). Defaults to the Aegis control channel + WinRM (5985/5986) + RDP (3389).</param>
-    public WindowsResponseExecutor(string hostId, IAegisLogger logger, int[]? managementPorts = null)
+    /// <param name="credentialRevoker">Identity-provider integration for RevokeCredentialAsync/RestoreCredentialAsync. Defaults to Active Directory (v2), which fails soft with an explanatory detail on a non-domain-joined host - pass <see cref="NullCredentialRevoker"/> explicitly to disable the attempt entirely, or your own <see cref="ICredentialRevoker"/> for a different identity provider.</param>
+    public WindowsResponseExecutor(string hostId, IAegisLogger logger, int[]? managementPorts = null, ICredentialRevoker? credentialRevoker = null)
     {
         _hostId = hostId;
         _logger = logger;
         _managementPorts = managementPorts ?? new[] { 5985, 5986, 3389 };
+        _credentialRevoker = credentialRevoker ?? new ActiveDirectoryCredentialRevoker(logger);
     }
 
     private ResponseActionResult HostMismatch(string hostId, string action)
@@ -194,11 +197,16 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
         return Task.FromResult(new ResponseActionResult { Success = true, Detail = detail, Reversible = true });
     }
 
-    public Task<ResponseActionResult> RevokeCredentialAsync(string hostId, string identity, CancellationToken ct = default)
+    public async Task<ResponseActionResult> RevokeCredentialAsync(string hostId, string identity, CancellationToken ct = default)
     {
-        const string detail = "Not implemented: credential revocation requires an organization-specific identity workflow (AD PowerShell / Entra ID Graph API) to be configured (doc §17).";
-        _logger.LogAudit(nameof(WindowsResponseExecutor), "RevokeCredential", hostId, "NotImplemented", $"identity={identity}");
-        return Task.FromResult(new ResponseActionResult { Success = false, Detail = detail, Reversible = true });
+        if (!Matches(hostId)) return HostMismatch(hostId, nameof(RevokeCredentialAsync));
+        return await _credentialRevoker.RevokeAsync(identity, ct).ConfigureAwait(false);
+    }
+
+    public async Task<ResponseActionResult> RestoreCredentialAsync(string hostId, string identity, CancellationToken ct = default)
+    {
+        if (!Matches(hostId)) return HostMismatch(hostId, nameof(RestoreCredentialAsync));
+        return await _credentialRevoker.RestoreAsync(identity, ct).ConfigureAwait(false);
     }
 
     private bool Matches(string hostId) => string.Equals(hostId, _hostId, StringComparison.OrdinalIgnoreCase);

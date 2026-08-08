@@ -28,6 +28,11 @@
     <Reference Include="System.Core" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Higher-fidelity kernel ETW collector (v2) - doc §19/§20's "ETW-based ... where useful" upgrade over the WMI/EventLog baseline. -->
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.16" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(MSBuildRuntimeType)' == 'Core' AND !$([MSBuild]::IsOSPlatform('Windows'))">
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>

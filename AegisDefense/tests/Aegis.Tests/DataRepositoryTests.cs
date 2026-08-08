@@ -1,5 +1,6 @@
 using Aegis.Core.Deception;
 using Aegis.Core.Events;
+using Aegis.Core.Integrity;
 using Aegis.Core.Policy;
 using Aegis.Core.Vulnerability;
 using Aegis.Data;
@@ -133,5 +134,56 @@ public class DataRepositoryTests : IDisposable
         var resolved = await repo.ResolveAsync(approval.ApprovalId, ApprovalResolution.Approved, "operator1", "looked legit");
         Assert.True(resolved);
         Assert.Empty(await repo.ListPendingAsync());
+    }
+
+    [Fact]
+    public async Task EventRepository_PersistsAndVerifiesHashChain()
+    {
+        var repo = new EventRepository(_db);
+        var key = EventChainSigner.GenerateKey();
+        var prevHash = EventChainSigner.GenesisHash;
+
+        for (var i = 0; i < 5; i++)
+        {
+            var evt = new NormalizedEvent
+            {
+                EventId = Guid.NewGuid(),
+                Timestamp = DateTimeOffset.UtcNow.AddSeconds(i),
+                HostId = "host-1",
+                ActionType = ActionType.ProcessCreate,
+                CommandLine = $"cmd-{i}",
+            };
+            var hash = EventChainSigner.ComputeLink(key, i, prevHash, evt);
+            await repo.InsertAsync(evt, sequence: i, chainHash: hash, prevChainHash: prevHash);
+            prevHash = hash;
+        }
+
+        var lastLink = await repo.GetLastChainLinkAsync();
+        Assert.NotNull(lastLink);
+        Assert.Equal(4, lastLink!.Value.Sequence);
+        Assert.Equal(prevHash, lastLink.Value.ChainHash);
+
+        var chain = await repo.GetChainAsync();
+        Assert.Equal(5, chain.Count);
+        var result = EventChainVerifier.Verify(key, chain);
+        Assert.True(result.Valid);
+    }
+
+    [Fact]
+    public async Task EventRepository_PruneOlderThan_RemovesOnlyStaleEvents()
+    {
+        var repo = new EventRepository(_db);
+        var old = new NormalizedEvent { EventId = Guid.NewGuid(), Timestamp = DateTimeOffset.UtcNow.AddDays(-30), HostId = "host-1", ActionType = ActionType.ProcessCreate };
+        var recent = new NormalizedEvent { EventId = Guid.NewGuid(), Timestamp = DateTimeOffset.UtcNow, HostId = "host-1", ActionType = ActionType.ProcessCreate };
+
+        await repo.InsertAsync(old);
+        await repo.InsertAsync(recent);
+
+        var deleted = await repo.PruneOlderThanAsync(DateTimeOffset.UtcNow.AddDays(-7));
+
+        Assert.Equal(1, deleted);
+        var remaining = await repo.QueryAsync("host-1");
+        Assert.Single(remaining);
+        Assert.Equal(recent.EventId, remaining[0].EventId);
     }
 }
