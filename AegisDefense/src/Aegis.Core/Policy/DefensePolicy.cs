@@ -37,6 +37,15 @@ public sealed class SiemForwardingSettings
     public string DeviceVendor { get; set; } = "AegisDefense";
 }
 
+/// <summary>Central Fleet Hub connection settings (v2) - see <see cref="Aegis.Core.Fleet.IFleetClient"/>. The API key is a shared secret; production deployments spanning untrusted networks should additionally put the Hub behind mutual TLS (see docs/ARCHITECTURE.md).</summary>
+public sealed class FleetSettings
+{
+    public bool Enabled { get; set; } = false;
+    public string? HubUrl { get; set; }
+    public string? ApiKey { get; set; }
+    public int ReportingIntervalSeconds { get; set; } = 60;
+}
+
 /// <summary>
 /// A specific high-impact action pre-authorized to run without live human sign-off, e.g.
 /// "isolate a designated test endpoint" from the MVP scope (doc §24). Anything not
@@ -72,6 +81,9 @@ public sealed class DefensePolicy
 
     /// <summary>SIEM forwarding target (v2). Null/empty host disables forwarding.</summary>
     public SiemForwardingSettings Siem { get; set; } = new();
+
+    /// <summary>Central Fleet Hub reporting (v2) - enables cross-host correlation. Disabled by default; a single isolated host works fully without one.</summary>
+    public FleetSettings Fleet { get; set; } = new();
 
     public AutonomyScoreWeights AutonomyWeights { get; set; } = AutonomyScoreWeights.Default;
     public HostRiskWeights RiskWeights { get; set; } = HostRiskWeights.Default;

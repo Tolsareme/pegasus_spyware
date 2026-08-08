@@ -30,6 +30,8 @@
     <Reference Include="System.ServiceProcess" />
     <!-- System.Security.Cryptography.ProtectedData (DPAPI) for EventChainKeyStore. -->
     <Reference Include="System.Security" />
+    <!-- HttpClient for HttpFleetClient (v2 Fleet Hub reporting). -->
+    <Reference Include="System.Net.Http" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(MSBuildRuntimeType)' == 'Core' AND !$([MSBuild]::IsOSPlatform('Windows'))">

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    Central Fleet Hub (v2): receives lightweight heartbeats from every Aegis.Service
+    instance and answers "how many other hosts just did this too" - the missing piece for
+    real cross-host correlation (doc §3.1, AutonomyScore's cross-host-coordination term).
+    This runs centrally on infrastructure the organization controls (a server, a container),
+    not on the old/new Windows endpoints being protected, so it's free to target net8.0
+    directly rather than net48 - no "old Windows compatibility" constraint applies here.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Aegis.FleetHub</RootNamespace>
+    <AssemblyName>Aegis.FleetHub</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Aegis.Core\Aegis.Core.csproj" />
+  </ItemGroup>
+
+</Project>

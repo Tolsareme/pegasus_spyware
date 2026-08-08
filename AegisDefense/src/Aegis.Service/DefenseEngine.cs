@@ -4,6 +4,7 @@ using Aegis.Core.Diagnostics;
 using Aegis.Core.Estimation;
 using Aegis.Core.Events;
 using Aegis.Core.Features;
+using Aegis.Core.Fleet;
 using Aegis.Core.Graph;
 using Aegis.Core.Integrity;
 using Aegis.Core.Policy;
@@ -59,7 +60,10 @@ public sealed class DefenseEngine
     private string _chainPrevHash = EventChainSigner.GenesisHash;
 
     private ISiemForwarder _siemForwarder = new NullSiemForwarder();
+    private IFleetClient _fleetClient = new NullFleetClient();
+    private FleetCorrelationSnapshot? _lastCorrelation;
     private Timer? _retentionTimer;
+    private Timer? _fleetTimer;
 
     private DefensePolicy _activePolicy = DefensePolicy.CreateDefault("service-startup-default");
     public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
@@ -109,6 +113,7 @@ public sealed class DefenseEngine
         }
 
         ApplySiemSettings(_activePolicy.Siem);
+        ApplyFleetSettings(_activePolicy.Fleet);
         _retentionTimer = new Timer(_ => _ = RunRetentionAsync(), null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(6));
 
         _collectors.Start(evt => _ = HandleEventAsync(evt));
@@ -119,6 +124,8 @@ public sealed class DefenseEngine
     {
         _collectors.Stop();
         _retentionTimer?.Dispose();
+        _fleetTimer?.Dispose();
+        (_fleetClient as IDisposable)?.Dispose();
     }
 
     private async Task RunRetentionAsync()
@@ -147,6 +154,74 @@ public sealed class DefenseEngine
         _siemForwarder = settings.Enabled && !string.IsNullOrWhiteSpace(settings.Host)
             ? new CefSyslogForwarder(settings.Host!, settings.Port, settings.UseTcp, settings.DeviceVendor)
             : new NullSiemForwarder();
+    }
+
+    private void ApplyFleetSettings(FleetSettings settings)
+    {
+        (_fleetClient as IDisposable)?.Dispose();
+        _fleetTimer?.Dispose();
+        _fleetTimer = null;
+        _lastCorrelation = null;
+
+        if (settings.Enabled && !string.IsNullOrWhiteSpace(settings.HubUrl) && !string.IsNullOrWhiteSpace(settings.ApiKey))
+        {
+            _fleetClient = new HttpFleetClient(settings.HubUrl!, settings.ApiKey!, _logger);
+            var interval = TimeSpan.FromSeconds(Math.Max(15, settings.ReportingIntervalSeconds));
+            _fleetTimer = new Timer(_ => _ = RunFleetReportingAsync(), null, TimeSpan.FromSeconds(5), interval);
+            _logger.Info(nameof(DefenseEngine), $"Fleet Hub reporting enabled -> {settings.HubUrl} every {interval}.");
+        }
+        else
+        {
+            _fleetClient = new NullFleetClient();
+        }
+    }
+
+    private async Task RunFleetReportingAsync()
+    {
+        try
+        {
+            var stateSnapshots = _stateEstimator.GetCurrentStates();
+            var topState = stateSnapshots.TryGetValue(HostId, out var state) ? state.ToString() : null;
+            var recentAlerts = await _alerts.QueryAsync(HostId, take: 20).ConfigureAwait(false);
+            // net48 lacks both StringSplitOptions.TrimEntries and the single-char Split(char, StringSplitOptions)
+            // overload (net5.0+ only) - use the char[] overload and trim explicitly instead.
+            var recentRuleIds = recentAlerts
+                .SelectMany(a => a.Source.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                .Select(s => s.Trim())
+                .Distinct()
+                .ToList();
+            var riskScore = recentAlerts.Count > 0 ? recentAlerts.Max(a => a.RiskBreakdown?.Total ?? 0) : 0;
+
+            await _fleetClient.ReportHeartbeatAsync(new FleetHeartbeat
+            {
+                HostId = HostId,
+                Timestamp = DateTimeOffset.UtcNow,
+                RuleIdsFired = recentRuleIds,
+                TopAttackState = topState,
+                RiskScore = riskScore,
+            }).ConfigureAwait(false);
+
+            _lastCorrelation = await _fleetClient.GetCorrelationAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warn(nameof(DefenseEngine), $"Fleet reporting cycle failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Distinct hosts (other than this one) that recently fired any of these rule IDs, per the last Fleet Hub sync - the real cross-host-coordination signal doc §11's AutonomyScore term needs. 0 (not "unknown") when fleet reporting is disabled or no data has arrived yet, matching FeatureSnapshot's existing default.</summary>
+    private int GetCrossHostSimilarHostCount(IReadOnlyList<RuleFinding> findings)
+    {
+        if (_lastCorrelation is null || findings.Count == 0) return 0;
+        var max = 0;
+        foreach (var finding in findings)
+        {
+            if (_lastCorrelation.DistinctHostsByRuleId.TryGetValue(finding.RuleId, out var hostCount))
+            {
+                max = Math.Max(max, Math.Max(0, hostCount - 1)); // exclude this host itself
+            }
+        }
+        return max;
     }
 
     /// <summary>Recomputes the entire on-disk event chain and reports the first tampered/missing record, if any (v2 - doc §26 telemetry-poisoning control).</summary>
@@ -188,6 +263,7 @@ public sealed class DefenseEngine
         await _policies.SetActiveAsync(signedPolicy).ConfigureAwait(false);
         _activePolicy = signedPolicy;
         ApplySiemSettings(signedPolicy.Siem);
+        ApplyFleetSettings(signedPolicy.Fleet);
         _logger.LogAudit(nameof(DefenseEngine), "PolicyUpdate", HostId, "Success", $"Applied policy '{signedPolicy.PolicyId}' v{signedPolicy.Version} issued by '{signedPolicy.Issuer}'.");
         return (true, null);
     }
@@ -237,6 +313,14 @@ public sealed class DefenseEngine
 
             var vulnerabilityExposure = await GetVulnerabilityExposureAsync(evt.HostId).ConfigureAwait(false);
             var attackSequenceScore = stateSnapshot is { CurrentState: not AttackState.Benign } s ? s.Confidence : 0.0;
+
+            // Cross-host coordination (doc §11's AutonomyScore term) requires visibility beyond
+            // this one isolated host - fill it in from the last Fleet Hub sync, if any (v2).
+            var crossHostCount = GetCrossHostSimilarHostCount(findings);
+            if (crossHostCount > 0)
+            {
+                snapshot = snapshot with { CrossHostSimilarHostCount = crossHostCount };
+            }
 
             var risk = HostRiskCalculator.Compute(snapshot, findings, mlAnomalyScore: anomaly.Score,
                 vulnerabilityExposureScore: vulnerabilityExposure, attackSequenceScore: attackSequenceScore,
