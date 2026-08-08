@@ -23,6 +23,8 @@ public enum ActionType
     FileWrite,
     FileDelete,
     FileRename,
+    /// <summary>Generic read/write/delete access to an object, as reported by Security-log 4663 auditing - used primarily for decoy artifacts (see <c>WindowsDecoyMaterializer</c>), where "was it touched at all" matters more than the specific verb.</summary>
+    FileAccess,
     RegistrySet,
     RegistryDelete,
     ServiceCreate,

@@ -22,14 +22,20 @@ public static class WindowsCallerRoleResolver
 {
     public const string AnalystGroupName = "AegisDefense Analysts";
 
+    /// <summary>Returns "{Role}|{WindowsIdentityName}" (e.g. "Administrator|CONTOSO\jdoe") -
+    /// <see cref="Aegis.Service.IpcRequestHandler"/> splits this back apart so the resolved,
+    /// impersonation-verified Windows identity is available for audit purposes (e.g. WhoAmI),
+    /// distinct from whatever a caller might separately claim in a request payload.</summary>
     public static string Resolve(NamedPipeServerStream pipe, IAegisLogger logger)
     {
         try
         {
             var role = OperatorRole.Unknown;
+            string? identityName = null;
             pipe.RunAsClient(() =>
             {
                 using var identity = WindowsIdentity.GetCurrent();
+                identityName = identity.Name;
                 var principal = new WindowsPrincipal(identity);
 
                 if (principal.IsInRole(WindowsBuiltInRole.Administrator))
@@ -41,7 +47,7 @@ public static class WindowsCallerRoleResolver
                     role = OperatorRole.Analyst;
                 }
             });
-            return role.ToString();
+            return $"{role}|{identityName}";
         }
         catch (Exception ex)
         {

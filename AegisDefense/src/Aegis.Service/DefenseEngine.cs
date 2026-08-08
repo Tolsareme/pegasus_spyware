@@ -42,6 +42,7 @@ public sealed class DefenseEngine
     private readonly CollectorHost _collectors;
 
     private readonly DeceptionManager _deception = new();
+    private readonly IDecoyMaterializer _decoyMaterializer;
     private readonly RuleEngine _ruleEngine = new();
     private readonly AttackStateGraph _graph = new();
     private readonly AttackStateEstimator _stateEstimator = new();
@@ -70,7 +71,7 @@ public sealed class DefenseEngine
 
     public string HostId => _collectors.HostId;
 
-    public DefenseEngine(IAegisLogger logger, AegisDatabase db, IResponseExecutor responseExecutor, PolicyTrustStore trustStore, byte[] chainKey)
+    public DefenseEngine(IAegisLogger logger, AegisDatabase db, IResponseExecutor responseExecutor, PolicyTrustStore trustStore, byte[] chainKey, IDecoyMaterializer? decoyMaterializer = null)
     {
         _logger = logger;
         _db = db;
@@ -84,6 +85,7 @@ public sealed class DefenseEngine
         _responseExecutor = responseExecutor;
         _collectors = new CollectorHost(logger);
         _chainKey = chainKey;
+        _decoyMaterializer = decoyMaterializer ?? new NullDecoyMaterializer();
     }
 
     public async Task StartAsync()
@@ -258,6 +260,18 @@ public sealed class DefenseEngine
         {
             _logger.Warn(nameof(DefenseEngine), $"Rejected policy update '{signedPolicy.PolicyId}' - signature verification failed.");
             return (false, "Signature verification failed - policy was not applied.");
+        }
+
+        // A validly-signed policy is not automatically a *current* one: without this check, any
+        // older signed policy an attacker can obtain (it's readable via GetPolicy by any
+        // authenticated caller, including Analysts, and every version is retained in policy
+        // history) could be replayed later to silently downgrade auto-containment/thresholds -
+        // without needing the operator's private signing key at all. Signatures only prove
+        // authenticity, not freshness, so freshness has to be enforced here.
+        if (signedPolicy.Version <= _activePolicy.Version)
+        {
+            _logger.Warn(nameof(DefenseEngine), $"Rejected policy update '{signedPolicy.PolicyId}' v{signedPolicy.Version} - not newer than the active policy (v{_activePolicy.Version}); possible replay of a stale signed policy.");
+            return (false, $"Policy version {signedPolicy.Version} is not newer than the active version {_activePolicy.Version} - rejected to prevent replay of an old signed policy.");
         }
 
         await _policies.SetActiveAsync(signedPolicy).ConfigureAwait(false);
@@ -554,16 +568,37 @@ public sealed class DefenseEngine
         return (nodes, edges);
     }
 
-    public async Task RegisterDecoyAsync(DecoyResourceDefinition decoy)
+    /// <summary>Registers the decoy definition (so access to it is reclassified as a canary hit)
+    /// and, best-effort, materializes the real artifact on disk via the configured
+    /// <see cref="IDecoyMaterializer"/>. Registration always succeeds if the id is unique even
+    /// when materialization doesn't (e.g. an unsupported decoy type, or no materializer
+    /// configured) - the returned detail explains what happened so the caller can provision the
+    /// artifact manually if needed.</summary>
+    public async Task<string?> RegisterDecoyAsync(DecoyResourceDefinition decoy)
     {
         _deception.RegisterDecoy(decoy);
         await _decoyStore.UpsertAsync(decoy).ConfigureAwait(false);
+
+        var result = await _decoyMaterializer.MaterializeAsync(decoy).ConfigureAwait(false);
+        if (!result.Success)
+            _logger.Warn(nameof(DefenseEngine), $"Decoy '{decoy.Id}' registered, but materialization did not complete: {result.Detail}");
+        else
+            _logger.Info(nameof(DefenseEngine), $"Decoy '{decoy.Id}' registered and materialized: {result.Detail}");
+        return result.Success ? null : result.Detail;
     }
 
     public async Task<bool> RemoveDecoyAsync(string decoyId)
     {
+        var existing = _deception.Decoys.FirstOrDefault(d => d.Id == decoyId);
         var removed = _deception.RemoveDecoy(decoyId);
         await _decoyStore.RemoveAsync(decoyId).ConfigureAwait(false);
+
+        if (existing is not null)
+        {
+            var result = await _decoyMaterializer.RemoveAsync(existing).ConfigureAwait(false);
+            if (!result.Success)
+                _logger.Warn(nameof(DefenseEngine), $"Decoy '{decoyId}' unregistered, but artifact removal did not complete: {result.Detail}");
+        }
         return removed;
     }
 

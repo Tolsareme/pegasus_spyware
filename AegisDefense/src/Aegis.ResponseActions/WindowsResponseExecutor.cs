@@ -54,8 +54,8 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
         var results = new List<ProcessRunResultSummary>();
 
         // Block all outbound and inbound traffic under this rule name...
-        results.Add(await RunNetshAsync($"advfirewall firewall add rule name=\"{ruleName}-out\" dir=out action=block enable=yes", ct));
-        results.Add(await RunNetshAsync($"advfirewall firewall add rule name=\"{ruleName}-in\" dir=in action=block enable=yes", ct));
+        results.Add(await RunNetshAsync($"advfirewall firewall add rule name={Q(ruleName + "-out")} dir=out action=block enable=yes", ct));
+        results.Add(await RunNetshAsync($"advfirewall firewall add rule name={Q(ruleName + "-in")} dir=in action=block enable=yes", ct));
 
         // ...then punch explicit allow holes for management ports so the box stays controllable.
         if (preserveManagementConnectivity)
@@ -63,7 +63,7 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
             foreach (var port in _managementPorts)
             {
                 results.Add(await RunNetshAsync(
-                    $"advfirewall firewall add rule name=\"{ruleName}-mgmt-{port}\" dir=in action=allow protocol=TCP localport={port}", ct));
+                    $"advfirewall firewall add rule name={Q(ruleName + $"-mgmt-{port}")} dir=in action=allow protocol=TCP localport={port}", ct));
             }
         }
 
@@ -86,7 +86,7 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
         var deletions = new List<ProcessRunResultSummary>();
         foreach (var suffix in new[] { "-out", "-in" }.Concat(_managementPorts.Select(p => $"-mgmt-{p}")))
         {
-            deletions.Add(await RunNetshAsync($"advfirewall firewall delete rule name=\"{ruleName}{suffix}\"", ct));
+            deletions.Add(await RunNetshAsync($"advfirewall firewall delete rule name={Q(ruleName + suffix)}", ct));
         }
 
         var success = deletions.All(r => r.Succeeded || r.NotFound);
@@ -138,8 +138,8 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
         if (!Matches(hostId)) return HostMismatch(hostId, nameof(ApplyFirewallRestrictionAsync));
 
         var name = RestrictionRulePrefix + restriction.RuleName;
-        var args = $"advfirewall firewall add rule name=\"{name}\" dir={restriction.Direction} action={restriction.Action} protocol={restriction.Protocol}" +
-                   (restriction.RemoteAddress is not null ? $" remoteip={restriction.RemoteAddress}" : "") +
+        var args = $"advfirewall firewall add rule name={Q(name)} dir={Q(restriction.Direction)} action={Q(restriction.Action)} protocol={Q(restriction.Protocol)}" +
+                   (restriction.RemoteAddress is not null ? $" remoteip={Q(restriction.RemoteAddress)}" : "") +
                    (restriction.RemotePort is not null ? $" remoteport={restriction.RemotePort}" : "");
 
         var result = await RunNetshAsync(args, ct);
@@ -151,7 +151,7 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
     {
         if (!Matches(hostId)) return HostMismatch(hostId, nameof(RemoveFirewallRestrictionAsync));
 
-        var result = await RunNetshAsync($"advfirewall firewall delete rule name=\"{ruleName}\"", ct);
+        var result = await RunNetshAsync($"advfirewall firewall delete rule name={Q(ruleName)}", ct);
         var success = result.Succeeded || result.NotFound;
         _logger.LogAudit(nameof(WindowsResponseExecutor), "RemoveFirewallRestriction", hostId, success ? "Success" : "Failure", ruleName);
         return new ResponseActionResult { Success = success, Detail = success ? $"Removed rule '{ruleName}'." : result.Error, Reversible = true };
@@ -172,7 +172,7 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
                 }
             }
 
-            var configResult = await ProcessRunner.RunAsync("sc.exe", $"config \"{serviceName}\" start= disabled", ct: ct).ConfigureAwait(false);
+            var configResult = await ProcessRunner.RunAsync("sc.exe", $"config {Q(serviceName)} start= disabled", ct: ct).ConfigureAwait(false);
             var success = configResult.Succeeded;
             var detail = success ? $"Service '{serviceName}' stopped and disabled." : $"Stopped '{serviceName}' but failed to set start type disabled: {configResult.StdErr}";
             _logger.LogAudit(nameof(WindowsResponseExecutor), "DisableService", hostId, success ? "Success" : "PartialFailure", detail);
@@ -210,6 +210,11 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
     }
 
     private bool Matches(string hostId) => string.Equals(hostId, _hostId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Shorthand for <see cref="ArgumentEscaping.Quote"/> - every value interpolated into
+    /// a netsh/sc.exe command line in this class goes through this so an embedded space or
+    /// double-quote can never terminate a token early and inject additional switches.</summary>
+    private static string Q(string value) => ArgumentEscaping.Quote(value);
 
     private static string? TryGetImagePath(Process process)
     {

@@ -96,13 +96,37 @@ cd scripts
 ## Deploying decoys
 
 Use the console's **Deception** tab, or send a `RegisterDecoy` IPC request, to register a
-`DecoyResourceDefinition`. Remember: the decoy's *location* (a file path, share, or service
-identity name) needs to actually exist/be created on the host for the corresponding
-collector to observe access to it — this MVP registers the *definition* (so the engine
-knows to reclassify access to that location as a canary hit) but does not yet create the
-decoy artifact on disk for you. Creating the file/share/identity itself is an operational
-step; automating that is a natural next increment (`Aegis.Deception`-style helper) once the
-detection side is validated in your environment.
+`DecoyResourceDefinition`. The decoy's *location* (a file path, directory, share, or service
+identity name) needs to actually exist on the host for a collector to observe access to it —
+registering the definition alone only teaches the engine to reclassify access to that
+location as a canary hit.
+
+As of v2, the service also materializes `File`/`Directory`/`Share` decoys automatically
+(`WindowsDecoyMaterializer`): registering one of these types creates the real artifact (an
+inert placeholder file, an empty directory, or an SMB share backed by a folder under the
+service's temp root) and, best-effort, sets a SACL audit rule on it so any read/write/delete
+fires Security-log event 4663, which `SecurityEventLogCollector` now understands. If
+materialization fails or isn't supported for a decoy type, `RegisterDecoy`'s response still
+reports `Success=true` for the registration itself but carries an explanatory `Error` string
+— check it (or the service log) and create the artifact by hand if needed; canary matching
+still works either way once the location exists.
+
+`ServiceIdentity`, `HoneyCredential`, and `Api` decoys are **not** auto-materialized — each
+would mean creating a real Windows service, a real account, or standing up a real endpoint,
+which is a deliberate operator action, not something this automates on your behalf. Register
+the definition, then provision the artifact yourself.
+
+For the 4663 audit rule to actually generate events, object-access auditing must be enabled
+on the host (this is a system-wide policy change with its own noise implications, so it is
+**not** flipped automatically by the materializer):
+```powershell
+auditpol /set /subcategory:"File System" /success:enable /failure:enable
+```
+Consider scoping this to the decoy paths only if you're worried about log volume from normal
+file activity elsewhere on the host — object-level SACLs mean file-system auditing only
+actually produces events for objects that have an audit rule set, so enabling the subcategory
+without any other SACLs configured should be low-volume in practice, but validate this in
+your environment before relying on it at scale.
 
 ---
 

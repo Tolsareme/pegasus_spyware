@@ -88,11 +88,18 @@ public sealed class AegisPipeServer : IAsyncDisposable
                 // Resolved once per connection, not per message - the caller's identity/role
                 // can't change mid-connection, and impersonation (what a real resolver does
                 // under the hood) is comparatively expensive to redo for every request.
+                // null is not a safe "untrusted" sentinel here: null caller context means "no
+                // identifyCaller resolver is configured at all", which Aegis.Service.IpcRequestHandler
+                // treats as pre-RBAC/fully-trusted (see class doc above). If a *configured* resolver
+                // throws, falling back to null would silently upgrade a failed/untrusted resolution
+                // into full trust - the opposite of fail-closed. So a resolver that throws gets an
+                // explicit sentinel that can never parse as a valid role instead.
+                const string ResolverFailedSentinel = "Unknown";
                 string? callerContext = null;
                 if (_identifyCaller is not null)
                 {
                     try { callerContext = _identifyCaller(pipe); }
-                    catch { /* fail closed to null (untrusted) rather than let a resolver bug crash the connection */ }
+                    catch { callerContext = ResolverFailedSentinel; }
                 }
 
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);

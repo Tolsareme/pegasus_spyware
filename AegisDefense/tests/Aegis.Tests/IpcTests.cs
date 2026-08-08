@@ -103,6 +103,35 @@ public class IpcTests
     }
 
     [Fact]
+    public async Task Server_FailsClosed_WhenIdentifyCallerThrows()
+    {
+        // A *configured* resolver that throws must never be indistinguishable from "no resolver
+        // configured" (null) - null is treated as fully-trusted by IpcRequestHandler, so a
+        // resolver bug must not silently upgrade to full trust. See AegisPipeServer.HandleClientAsync.
+        var pipeName = "aegis-tests-" + Guid.NewGuid().ToString("N");
+        string? observedCallerRole = "not-yet-set";
+
+        await using var server = new AegisPipeServer(
+            pipeFactory: () => new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous),
+            handler: (envelope, callerRole, ct) =>
+            {
+                observedCallerRole = callerRole;
+                return Task.FromResult(envelope.CreateResponse(MessageTypes.GetServiceHealth,
+                    new GetServiceHealthResponse(true, "1.0.0-test", DateTimeOffset.UtcNow, Array.Empty<string>())));
+            },
+            identifyCaller: _ => throw new InvalidOperationException("simulated resolver failure"));
+        server.Start();
+
+        await using var client = new AegisPipeClient(pipeName);
+        await client.ConnectAsync();
+        await client.RequestAsync<GetServiceHealthRequest, GetServiceHealthResponse>(MessageTypes.GetServiceHealth, new GetServiceHealthRequest());
+
+        Assert.NotNull(observedCallerRole);
+        Assert.NotEqual("Administrator", observedCallerRole);
+        Assert.NotEqual("Analyst", observedCallerRole);
+    }
+
+    [Fact]
     public void Envelope_RoundTrips_ThroughLineSerialization()
     {
         var request = IpcEnvelope.CreateRequest(MessageTypes.GetAlerts, new GetAlertsRequest("host-1", null, 50));

@@ -33,6 +33,7 @@ public sealed class SecurityEventLogCollector : ITelemetryCollector
         4732, // member added to a privileged local group
         4735, // local group changed
         4964, // special group assigned to new logon
+        4663, // object access (used for decoy file/directory access - see WindowsDecoyMaterializer)
     };
 
     public SecurityEventLogCollector(string hostId, string hostRole)
@@ -118,6 +119,15 @@ public sealed class SecurityEventLogCollector : ITelemetryCollector
 
             case 4964: // special groups assigned to new logon
                 return Base(record, ActionType.PrivilegeAssigned, ObjectType.UserAccount, Prop(0));
+
+            case 4663: // object access: SubjectUserName=idx1, ObjectName=idx6, ProcessId=idx12, ProcessName=idx13
+                return Base(record, ActionType.FileAccess, ObjectType.File, Prop(6))
+                    with
+                    {
+                        UserId = Prop(1),
+                        ProcessId = int.TryParse(Prop(12), out var pid) ? pid : null,
+                        ImagePath = Prop(13),
+                    };
 
             default:
                 return null;

@@ -48,8 +48,9 @@ public sealed class ServiceHost
         var chainKey = new EventChainKeyStore(ServiceConfig.EventChainKeyPath, _logger).LoadOrCreate();
         var hostId = HostIdentity.GetHostId();
         var responseExecutor = new WindowsResponseExecutor(hostId, _logger);
+        var decoyMaterializer = new WindowsDecoyMaterializer(_logger);
 
-        _engine = new DefenseEngine(_logger, _db, responseExecutor, trustStore, chainKey);
+        _engine = new DefenseEngine(_logger, _db, responseExecutor, trustStore, chainKey, decoyMaterializer);
         await _engine.StartAsync().ConfigureAwait(false);
 
         var requestHandler = new IpcRequestHandler(_engine, _logger);

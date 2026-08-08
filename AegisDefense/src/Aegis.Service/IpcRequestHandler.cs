@@ -34,9 +34,27 @@ public sealed class IpcRequestHandler
         // wired up on this deployment - fall back to the pre-RBAC behavior where the pipe's
         // own ACL (Administrators + LocalSystem only) was the sole gate, so every caller who
         // could connect at all is trusted with everything, exactly as before.
-        var role = callerRoleRaw is null
+        //
+        // A configured resolver (WindowsCallerRoleResolver) packs "{Role}|{WindowsIdentityName}"
+        // into callerRoleRaw - split it apart so the actual, impersonation-verified identity is
+        // available separately from the role for audit purposes (e.g. WhoAmI), distinct from
+        // anything a client might separately claim in a request payload.
+        string? roleToken = callerRoleRaw;
+        string? callerIdentity = null;
+        if (callerRoleRaw is not null)
+        {
+            var separatorIndex = callerRoleRaw.IndexOf('|');
+            if (separatorIndex >= 0)
+            {
+                roleToken = callerRoleRaw.Substring(0, separatorIndex);
+                callerIdentity = callerRoleRaw.Substring(separatorIndex + 1);
+                if (string.IsNullOrEmpty(callerIdentity)) callerIdentity = null;
+            }
+        }
+
+        var role = roleToken is null
             ? OperatorRole.Administrator
-            : Enum.TryParse<OperatorRole>(callerRoleRaw, out var parsed) ? parsed : OperatorRole.Unknown;
+            : Enum.TryParse<OperatorRole>(roleToken, out var parsed) ? parsed : OperatorRole.Unknown;
 
         if (role == OperatorRole.Unknown)
         {
@@ -116,8 +134,8 @@ public sealed class IpcRequestHandler
                 case MessageTypes.RegisterDecoy:
                 {
                     var req = request.DeserializePayload<RegisterDecoyRequest>()!;
-                    await _engine.RegisterDecoyAsync(req.Decoy).ConfigureAwait(false);
-                    return request.CreateResponse(MessageTypes.RegisterDecoy, new RegisterDecoyResponse(true, null));
+                    var materializationDetail = await _engine.RegisterDecoyAsync(req.Decoy).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RegisterDecoy, new RegisterDecoyResponse(true, materializationDetail));
                 }
                 case MessageTypes.RemoveDecoy:
                 {
@@ -144,7 +162,7 @@ public sealed class IpcRequestHandler
                 }
                 case MessageTypes.WhoAmI:
                 {
-                    return request.CreateResponse(MessageTypes.WhoAmI, new WhoAmIResponse(role, callerRoleRaw));
+                    return request.CreateResponse(MessageTypes.WhoAmI, new WhoAmIResponse(role, callerIdentity ?? callerRoleRaw));
                 }
                 case MessageTypes.GetHostInventory:
                 {

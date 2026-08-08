@@ -66,4 +66,27 @@ public class DeceptionManagerTests
         var decoy = new DecoyResourceDefinition { Id = "d1", Type = DecoyType.HoneyCredential, Location = "svc-account", Description = "honey cred" };
         Assert.False(decoy.GrantsRealPrivilege);
     }
+
+    [Fact]
+    public async Task NullDecoyMaterializer_MaterializeAsync_ReturnsExplanatoryFailure()
+    {
+        var materializer = new NullDecoyMaterializer();
+        var decoy = new DecoyResourceDefinition { Id = "d1", Type = DecoyType.File, Location = @"C:\decoys\passwords.xlsx", Description = "canary" };
+
+        var result = await materializer.MaterializeAsync(decoy);
+
+        Assert.False(result.Success);
+        Assert.Contains("No decoy materializer", result.Detail);
+    }
+
+    [Fact]
+    public async Task NullDecoyMaterializer_RemoveAsync_SucceedsAsNoOp()
+    {
+        var materializer = new NullDecoyMaterializer();
+        var decoy = new DecoyResourceDefinition { Id = "d1", Type = DecoyType.File, Location = @"C:\decoys\passwords.xlsx", Description = "canary" };
+
+        var result = await materializer.RemoveAsync(decoy);
+
+        Assert.True(result.Success);
+    }
 }
