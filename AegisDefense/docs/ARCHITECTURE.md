@@ -2,58 +2,69 @@
 
 This document explains how Aegis Autonomous Defense is put together, the technology
 choices behind it, and — just as importantly — what the research document describes that
-is **not** implemented yet.
+is **not** implemented yet. See [`CHANGELOG.md`](CHANGELOG.md) for what shipped in v1 vs v2.
 
 ## Layered view
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Aegis.Gui  (WPF, net48)                                                │
-│  Dashboard / Alerts / Events / Policy & Autonomy / Deception /          │
-│  Vulnerabilities / Approvals                                            │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                 │ named pipe, NDJSON, Administrators-only ACL
-                                 │ (Aegis.Ipc)
-┌───────────────────────────────▼─────────────────────────────────────────┐
-│  Aegis.Service  (Windows Service, net48)                                │
-│  ┌─────────────┐   ┌────────────────────────────────────────────────┐  │
-│  │ Aegis.Sensor│──▶│ DefenseEngine                                   │  │
-│  │ collectors  │   │  Deception → Store → Graph → Features → Rules  │  │
-│  └─────────────┘   │  → AttackState → HostRisk → ResponsePolicy     │  │
-│                     └───────────────────┬────────────────────────────┘ │
-│                                          │                              │
-│                     ┌────────────────────▼──────────┐                  │
-│                     │ Aegis.ResponseActions          │                  │
-│                     │ netsh / sc.exe / Process.Kill   │                 │
-│                     └────────────────────────────────┘                  │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                 │
-                     ┌───────────▼───────────┐
-                     │ Aegis.Data (SQLite)    │
-                     │ events/alerts/policy/  │
-                     │ vulns/decoys/approvals │
-                     └────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Aegis.Gui  (WPF, net48)                                                  │
+│  Dashboard(+trends) / Alerts / Events / Hosts / Attack Graph /            │
+│  Policy & Autonomy(RBAC-aware) / Deception / Vulnerabilities / Approvals  │
+│  + system tray / critical-alert notifications                            │
+└───────────────────────────────┬───────────────────────────────────────────┘
+                                 │ named pipe, NDJSON, Administrators + Analysts ACL,
+                                 │ per-connection RBAC (Aegis.Ipc)
+┌───────────────────────────────▼───────────────────────────────────────────┐
+│  Aegis.Service  (Windows Service, net48)                                  │
+│  ┌──────────────┐   ┌─────────────────────────────────────────────────┐  │
+│  │ Aegis.Sensor │──▶│ DefenseEngine                                    │  │
+│  │ ETW (pref.)  │   │  Deception → Chain-sign → Store → Graph →       │  │
+│  │ + WMI/EventLog│  │  Features → Rules → Anomaly(online stats) →     │  │
+│  │  fallback    │   │  AttackState → HostRisk(+cross-host) →          │  │
+│  └──────────────┘   │  ResponsePolicy → SIEM/Fleet forwarding          │  │
+│                      └───────────┬─────────────────────┬───────────────┘  │
+│                                  │                     │                  │
+│                     ┌────────────▼──────────┐  ┌───────▼────────────┐    │
+│                     │ Aegis.ResponseActions   │  │ HttpFleetClient /   │   │
+│                     │ netsh / sc.exe /        │  │ CefSyslogForwarder  │   │
+│                     │ Process.Kill / AD revoke │  │ (both best-effort) │   │
+│                     └─────────────────────────┘  └──────────┬─────────┘   │
+└───────────────────────────────┬────────────────────────────┼─────────────┘
+                                 │                            │ HTTPS + API key
+                     ┌───────────▼───────────┐    ┌───────────▼────────────┐
+                     │ Aegis.Data (SQLite)    │    │ Aegis.FleetHub (net8.0) │
+                     │ events(+chain)/alerts/ │    │ cross-host correlation, │
+                     │ policy/vulns/decoys/   │    │ fleet roster - central, │
+                     │ approvals              │    │ org-controlled infra    │
+                     └────────────────────────┘    └─────────────────────────┘
 
   Aegis.Core (netstandard2.0 + net8.0, zero OS dependency, unit-tested)
-  models · rule engine · scoring · graph · attack-state estimation ·
-  response policy engine · deception logic · vulnerability prioritization
+  models · rule engine · online anomaly model · scoring · graph ·
+  attack-state estimation · response/RBAC policy · deception · vulnerability
+  prioritization · event hash-chaining · SIEM formatting · fleet aggregation ·
+  patch-rollout state machine
 ```
 
 `Aegis.Core` is deliberately the only assembly every other project depends on for
 *decisions*. `Aegis.Sensor` and `Aegis.ResponseActions` are the only assemblies that touch
-the OS. This means the entire detection/scoring/policy logic is unit-testable on any
-machine (63 tests, `dotnet test`, verified during development on Linux) even though the
-product only *runs* on Windows.
+the local OS; `Aegis.FleetHub` is the only one that runs off-endpoint. This means the
+entire detection/scoring/policy logic is unit-testable on any machine (98 tests,
+`dotnet test`, verified during development on Linux, including real HTTP integration tests
+against the Fleet Hub) even though the endpoint product only *runs* on Windows.
 
 ## Technology choices
 
-**.NET Framework 4.8 for OS-facing projects (`Aegis.Sensor`, `Aegis.ResponseActions`,
-`Aegis.Service`, `Aegis.Gui`), not .NET 8.** This was the deciding constraint: the task
-requires running on old *and* new Windows machines and Windows Server. .NET 8 only
-supports Windows 10 1607+ / Server 2012 R2+ — it drops Windows 7/8/8.1 entirely. .NET
-Framework 4.8 is preinstalled on Windows 10 1903+/11/Server 2016+ and is an in-place,
-no-reboot-required update on Windows 7 SP1/8.1/Server 2008 R2 SP1+. It is the only .NET
-runtime that actually spans the whole requested range.
+**.NET Framework 4.8 for OS-facing endpoint projects (`Aegis.Sensor`,
+`Aegis.ResponseActions`, `Aegis.Service`, `Aegis.Gui`), not .NET 8.** This was the deciding
+constraint: the task requires running on old *and* new Windows machines and Windows
+Server. .NET 8 only supports Windows 10 1607+ / Server 2012 R2+ — it drops Windows
+7/8/8.1 entirely. .NET Framework 4.8 is preinstalled on Windows 10 1903+/11/Server 2016+
+and is an in-place, no-reboot-required update on Windows 7 SP1/8.1/Server 2008 R2 SP1+. It
+is the only .NET runtime that actually spans the whole requested range. **`Aegis.FleetHub`
+(v2) is the one exception** — it's a central service that runs on infrastructure the
+organization controls, not on a protected endpoint, so it targets net8.0 directly with no
+compatibility constraint.
 
 **`netstandard2.0` (plus `net8.0` for fast local testing) for `Aegis.Core`/`Aegis.Data`/
 `Aegis.Ipc`.** netstandard2.0 is the binary contract both net48 and net8.0 can consume, so
@@ -64,18 +75,25 @@ support) are bridged by small compile-time-only shims in `Aegis.Core/Compat/` �
 technique the `PolySharp` package automates, hand-rolled here to avoid an extra dependency
 for four marker types.
 
-**SQLite (`Microsoft.Data.Sqlite`), not a client/server database.** The sensor/service has
-to run unattended on isolated endpoints and small servers with zero external
-infrastructure. SQLite needs nothing installed, works identically on Windows 7 through
-Server 2025, and is fast enough for this workload (WAL mode, indexed by host+timestamp).
+**SQLite (`Microsoft.Data.Sqlite`), not a client/server database**, for local endpoint
+storage. The sensor/service has to run unattended on isolated endpoints and small servers
+with zero external infrastructure. SQLite needs nothing installed, works identically on
+Windows 7 through Server 2025, and is fast enough for this workload (WAL mode, indexed by
+host+timestamp). `Aegis.FleetHub` (v2), by contrast, deliberately keeps *no* database at
+all — it's an in-memory correlation cache (`FleetCorrelationStore`) that only needs to
+remember the last ~15 minutes of activity; if it restarts, hosts just re-report.
 
 **Named pipes (`System.IO.Pipes`), not gRPC/a message bus**, for GUI↔Service IPC, despite
 doc §20 suggesting gRPC for the (inter-host) event transport. This is a *local*,
-same-machine, admin-only control channel — named pipes need no additional runtime, no
-port, no TLS certificate management, and their ACL (`PipeSecurity`, restricted to
-`BUILTIN\Administrators` + `LocalSystem`) already gives the access control gRPC would need
-extra plumbing for. The wire format (NDJSON envelopes, `Aegis.Ipc.IpcEnvelope`) was kept
-simple and human-readable on purpose, for auditability.
+same-machine control channel — named pipes need no additional runtime, no port, no TLS
+certificate management, and their ACL (`PipeSecurity`) already gives the access control
+gRPC would need extra plumbing for. v2 extended the ACL to optionally include an
+"AegisDefense Analysts" local group alongside Administrators/LocalSystem, with per-role
+enforcement happening in `IpcRequestHandler` (see RBAC below) rather than at the ACL layer,
+since Windows pipe ACLs have no concept of "read-only." **`Aegis.FleetHub` uses plain
+HTTPS + an API key** instead, because that connection *does* cross the network/a
+trust boundary between separate machines — the two transports were chosen for the
+trust boundary each one actually crosses, not out of inconsistency.
 
 **RSA-SHA256 signed policies over the classic XML key-interchange format, not PEM.**
 `RSA.ImportFromPem`/`ExportRSAPublicKeyPem` don't exist on .NET Framework 4.8 — they're
@@ -86,18 +104,43 @@ format-agnostic — it signs/verifies whatever `RSA` object it's given — so th
 key-*loading* detail, isolated to `Aegis.Gui.Services.PolicySigningKeyManager` and
 `Aegis.Service.PolicyTrustStore`.
 
-**WMI + classic Security event log polling/subscriptions instead of the C++/ETW sensor
-the doc's MVP section describes.** `ManagementEventWatcher` on `Win32_ProcessStartTrace`,
-`Win32_Service` instance events, and `EventLogWatcher` on the Security log and PowerShell
-operational log are all *push-based* (no busy-polling) and have shipped unchanged since
-Windows XP/Vista — meaning zero extra setup on the oldest supported OS, at the cost of
-slightly higher overhead than a native ETW consumer. `NetworkConnectionCollector` and
-`RegistryPersistenceCollector` do poll (5s and 30s intervals respectively) because there is
-no lightweight push API for TCP-table/registry changes without ETW or a kernel driver.
-**ETW is the documented upgrade path** (doc §19: "where useful") once this baseline sensor
-is proven — see "Not yet implemented" below.
+**ETW preferred, WMI/classic Security event log as the always-available fallback (v2).**
+`Aegis.Sensor.Collectors.EtwKernelCollector` (`Microsoft.Diagnostics.Tracing.TraceEvent`)
+consumes the kernel Process/ImageLoad/NetworkTCPIP providers directly when the process is
+elevated and can claim the single system-wide "NT Kernel Logger" session — lower overhead,
+higher fidelity than the v1 baseline. `CollectorHost` tries it first and only starts the
+WMI-based `ProcessTraceCollector`/`NetworkConnectionCollector` for whatever ETW didn't
+actually cover, so the same activity is never double-reported. `ManagementEventWatcher` on
+`Win32_Service`, and `EventLogWatcher` on the Security log and PowerShell operational log,
+remain push-based (no busy-polling) and have shipped unchanged since Windows XP/Vista —
+meaning the sensor still works with zero extra setup even where ETW can't run (non-elevated,
+or another tool already owns the kernel session).
 
-## Response policy & safety
+**A hand-rolled online statistical model, not a shipped trained model, for the "ML engine"
+(v2).** `Aegis.Core.Anomaly.StatisticalAnomalyModel` uses Welford's streaming mean/variance
+per feature per host, combined via RMS z-score into one explainable `[0,1]` score with named
+top-contributing features. This needs no labeled dataset and starts learning the moment the
+sensor runs — a real, functional unsupervised baseline, not a placeholder — but it's still a
+diagonal model (per-feature independent), not a trained sequence/covariance model. It
+implements `IAnomalyModel`, the seam a properly trained model (WP2/WP4) would replace.
+
+**HMAC-SHA256 event hash-chaining, not a blockchain/Merkle structure (v2).**
+`Aegis.Core.Integrity.EventChainSigner` links each stored event to the previous one via
+`HMAC(key, sequence, prevHash, event)`; `EventChainVerifier` recomputes the chain forward
+from genesis rather than trusting each row's own stored prev-hash column, so a deleted or
+reordered record is exactly as detectable as an edited one. This is tamper-*evidence*, not
+tamper-*proofing* — an attacker with both DB write access and the DPAPI-protected HMAC key
+could forge a self-consistent alternate history. Raising the bar past that (e.g. periodic
+external notarization of the chain head) is a further increment, not implemented.
+
+**CEF-over-syslog for SIEM export, not a vendor-specific connector (v2).**
+`Aegis.Core.Siem.CefSyslogForwarder` is the lowest-common-denominator format most SIEMs
+(Splunk, Sentinel via syslog, Elastic via Logstash, ArcSight) already parse without a
+custom integration, sent over UDP by default (fire-and-forget, matching typical syslog
+listener deployment) with a TCP option. Forwarding is always best-effort — a SIEM outage
+never blocks or slows down local detection/response.
+
+## Response policy, RBAC & safety
 
 `ResponsePolicyEngine.Decide` is the single chokepoint every automated action passes
 through. Two safety properties are enforced in code, not just policy:
@@ -112,54 +155,89 @@ through. Two safety properties are enforced in code, not just policy:
 
 `Aegis.Core.Response.IResponseExecutor` is a closed, enumerated set of actions (isolate,
 release isolation, terminate one named process, apply/remove one firewall rule, disable one
-service, increase telemetry, request credential revocation). There is intentionally no
+service, increase telemetry, revoke/restore one credential). There is intentionally no
 "run arbitrary command" method anywhere — the policy engine's decision is the *only* path
 to a privileged effect (doc §29).
+
+**RBAC (v2)** adds a second gate in front of that chokepoint for *who may ask* for a
+mutating action at all, independent of what the action is: `IpcRequestHandler` maps every
+named-pipe connection to `OperatorRole.Administrator` or `.Analyst` via real Windows group
+membership (`WindowsCallerRoleResolver`, using the pipe's built-in client impersonation),
+and refuses every mutating message type outright for an Analyst - enforced server-side, not
+just hidden in the GUI. A deployment that never provisions the "AegisDefense Analysts"
+group is unaffected: the pipe's ACL (Administrators + LocalSystem only) remains the sole
+gate, exactly as in v1.
 
 ## Extensibility seams
 
 - **`IProcessBaseline`** — swap `InMemoryProcessBaseline` for a trained/periodically
   refreshed model (WP2).
+- **`IAnomalyModel`** (v2) — swap `StatisticalAnomalyModel` for a trained/offline model
+  (isolation forest, autoencoder, an ONNX Runtime-hosted network) without touching
+  `DefenseEngine`'s fusion logic.
 - **`HostRiskCalculator.Compute(... mlAnomalyScore, vulnerabilityExposureScore,
-  attackSequenceScore ...)`** — three externally-supplied `[0,1]` signals are where a real
-  ML anomaly model, external vulnerability scanner, and/or learned sequence model (WP4)
-  plug in without touching the fusion logic.
-- **`IResponseExecutor`** — implement against a different OS or a fleet-coordination
-  backend for true "Enterprise response" (multi-host) instead of `WindowsResponseExecutor`'s
-  single-host scope.
-- **`ITelemetryCollector`** — add an ETW-based collector (e.g. via
-  `Microsoft.Diagnostics.Tracing.TraceEvent`) alongside or instead of the WMI/EventLog ones
-  without touching `DefenseEngine`.
-- **`IAegisLogger`** — swap `RollingFileLogger` for Windows Event Log, a SIEM forwarder, etc.
+  attackSequenceScore ...)`** — three externally-supplied `[0,1]` signals are where a
+  trained sequence model (WP4) plugs in without touching the fusion logic itself.
+- **`IResponseExecutor`** / **`ICredentialRevoker`** (v2) — implement against a different
+  OS, a different identity provider (Entra ID Graph instead of on-prem AD), or a
+  fleet-coordination backend for true multi-host "Enterprise response" instead of
+  `WindowsResponseExecutor`'s single-host scope.
+- **`ITelemetryCollector`** — the seam `EtwKernelCollector` (v2) itself was added through;
+  a future collector (e.g. a third-party EDR's telemetry export) plugs in the same way.
+- **`IAegisLogger`** — swap `RollingFileLogger` for Windows Event Log, a different SIEM
+  client, etc.
+- **`ISiemForwarder`** (v2) — swap `CefSyslogForwarder` for a vendor SDK/HTTP-based
+  forwarder without touching `DefenseEngine`'s alert pipeline.
+- **`IFleetClient`** (v2) — swap `HttpFleetClient` for a different transport (gRPC, a
+  message bus) to the Fleet Hub, or a different central aggregator entirely.
+- **`PatchRolloutOrchestrator`** (v2) — the state machine is implemented and fully tested,
+  but nothing calls it yet end-to-end; see "Not yet implemented" below for the wiring gap.
 
 ## Not yet implemented
 
 Being explicit about this matters more than pretending otherwise:
 
-- **Learned sequence/ML models (WP4)** — the rule engine (deterministic, doc §8) and a
-  simple frequency-based process baseline are implemented; a trained anomaly/sequence model
-  is a seam (`mlAnomalyScore`), not a shipped model.
-- **C++/ETW low-level sensor** — the MVP sensor uses WMI/EventLog instead (see above); ETW
-  is the documented next step.
-- **Cross-host correlation / "Enterprise response"** — each `Aegis.Service` instance is
-  self-contained per doc §19's per-endpoint diagram; there is no fleet-wide event bus or
-  central console in this repo yet, so `FeatureSnapshot.CrossHostSimilarHostCount` is always
-  0 and `ResponseLevel.EnterpriseResponse` behaves the same as `Contain` locally.
-- **Credential revocation** — `WindowsResponseExecutor.RevokeCredentialAsync` deliberately
-  returns `Success=false`; it requires an organization-specific AD/Entra ID integration
-  doc §17 calls for, which cannot be assumed generically.
-- **Ringed patch rollout orchestration (doc §18, steps 5-10)** — vulnerability
-  *prioritization* and mitigation *suggestions* are implemented; canary deployment/rollback
-  automation is not.
+- **Learned sequence/trained ML models (WP4)** — the rule engine (deterministic, doc §8)
+  and the v2 online statistical anomaly model are both real and running; a *trained*
+  offline model is still just a seam (`IAnomalyModel`, `mlAnomalyScore`), not a shipped
+  model, because that requires a labeled fleet dataset this repo doesn't have.
+- **`PatchRolloutOrchestrator` is not wired into `DefenseEngine`/the GUI/persistence.**
+  The state machine (doc §18's ten-step workflow, ring-by-ring health-check gating,
+  automatic rollback on failure) is implemented and has a thorough test suite, but nothing
+  creates a `PatchRolloutPlan` from a real vulnerability finding yet, there's no
+  `Aegis.Data` table for plans, no IPC exposure, and no actual Windows Update Agent
+  integration to execute what the orchestrator decides — it's ready to be driven, not yet
+  driven.
+- **Fleet Hub uses a shared API key, not mutual TLS.** Fine for a first deployment behind
+  a private network; a Hub reachable across an untrusted network should sit behind mTLS or
+  a reverse proxy that terminates it — the shared-secret model doesn't rotate or scope per
+  host.
+- **No fleet-wide console UI.** `Aegis.Gui` talks to exactly one `Aegis.Service` over one
+  local named pipe; it does not (yet) also query `Aegis.FleetHub` directly to show a
+  multi-host dashboard. The Hub's `/api/v1/fleet/status` endpoint already returns what such
+  a view would need.
+- **Decoy artifacts aren't auto-provisioned.** The GUI/service can *register* a
+  `DecoyResourceDefinition` (so access to that location gets reclassified as a canary hit),
+  but creating the actual file/share/identity on disk is still a manual operational step.
 - **Evaluation harness (WP10) / experimental metrics (doc §22)** — these require an
   isolated attack-range and labeled dataset program, out of scope for a code deliverable.
-- **Runtime behavior of the four Windows-only projects is unverified in this environment.**
-  `dotnet build AegisDefense.sln` — all eight projects, including the WPF `Aegis.Gui` —
-  compiles cleanly with zero errors/warnings, which was confirmed during development. What
-  wasn't (and can't be, without a Windows machine) verified here is *running* any of it: no
-  WMI event actually fired, no named pipe actually connected, no `netsh` rule was actually
-  applied. Treat a real Windows install (`docs/OPERATIONS.md`) as the next required
-  verification step, and add it as a CI stage.
+- **The WiX installer (`installer/`) could not be verified at all in this environment** —
+  more than "unverified," the WiX Toolset's own CLI explicitly declares non-Windows
+  behavior undefined, and running it here on deliberately trivial input produced internal
+  path-validation errors on inputs (like a plain relative directory name) that are valid
+  per the WiX schema. The `.wxs` was authored carefully against documented WiX v5 syntax,
+  but treat a real Windows build (`installer/build-installer.ps1`) as the first genuine
+  verification, not a formality.
+- **Runtime behavior of every Windows-only project is unverified in this environment.**
+  `dotnet build AegisDefense.sln` — all project in the solution, including the WPF
+  `Aegis.Gui` — compiles cleanly with zero errors/warnings, confirmed during development,
+  and `Aegis.FleetHub` additionally has real HTTP integration tests that pass. What wasn't
+  (and can't be, without a Windows machine) verified here is *running* the endpoint side:
+  no WMI/ETW event actually fired, no named pipe actually connected, no `netsh`/AD call was
+  actually applied. Treat a real Windows install (`docs/OPERATIONS.md`) as the next
+  required verification step, and add it as a CI stage (a starting point is at
+  `.github/workflows/aegis-defense-ci.yml`, itself unverified against a real GitHub Actions
+  run in this environment for the same reason).
 
 ## Repository context
 

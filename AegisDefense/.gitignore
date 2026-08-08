@@ -21,6 +21,14 @@ data/
 logs/
 *.log
 
+## Installer build output
+installer/publish/
+installer/bin/
+installer/obj/
+installer/.wix/
+*.msi
+*.wixpdb
+
 ## OS
 .DS_Store
 Thumbs.db

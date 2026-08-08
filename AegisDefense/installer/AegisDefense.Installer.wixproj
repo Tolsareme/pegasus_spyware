@@ -1,0 +1,34 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <!--
+    Builds AegisDefense.msi from the *published* (not just built) service and console
+    output. Build order:
+
+      dotnet publish ..\src\Aegis.Service\Aegis.Service.csproj -c Release -r win-x64 --self-contained false -o publish\service
+      dotnet publish ..\src\Aegis.Gui\Aegis.Gui.csproj -c Release -r win-x64 --self-contained false -o publish\gui
+      dotnet build AegisDefense.Installer.wixproj -c Release
+
+    Requires the WiX Toolset (`dotnet tool install --global wix --version 5.0.2`) and,
+    like Aegis.Gui, a Windows machine - WiX's own tooling declares non-Windows behavior
+    "undefined" and this project could not be fully verified in this repository's Linux
+    dev/CI sandbox; the .wxs authoring here follows documented WiX v5 syntax but treat a
+    Windows build as the first real verification step (see docs/OPERATIONS.md).
+  -->
+
+  <PropertyGroup>
+    <OutputName>AegisDefense</OutputName>
+    <Platform>x64</Platform>
+    <ServicePublishDir>$(MSBuildProjectDirectory)\publish\service</ServicePublishDir>
+    <GuiPublishDir>$(MSBuildProjectDirectory)\publish\gui</GuiPublishDir>
+    <DefineConstants>ServicePublishDir=$(ServicePublishDir);GuiPublishDir=$(GuiPublishDir)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Product.wxs" />
+  </ItemGroup>
+
+</Project>

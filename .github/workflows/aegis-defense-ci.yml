@@ -1,0 +1,115 @@
+name: Aegis Defense CI
+
+on:
+  push:
+    branches: [main, master]
+    paths: ["AegisDefense/**", ".github/workflows/aegis-defense-ci.yml"]
+  pull_request:
+    paths: ["AegisDefense/**", ".github/workflows/aegis-defense-ci.yml"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: AegisDefense
+
+jobs:
+  # Fast feedback on any OS: the portable projects (net8.0 + netstandard2.0) plus the
+  # net48 Windows-only projects that don't need WPF cross-compile cleanly here via
+  # Microsoft.NETFramework.ReferenceAssemblies, so a syntax/type error in any of them is
+  # caught in ~a minute without waiting for a Windows runner. This mirrors exactly what
+  # was verified by hand during development (see docs/ARCHITECTURE.md).
+  build-and-test-portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore AegisDefense.sln
+
+      - name: Build portable + net48-non-WPF projects
+        run: |
+          dotnet build src/Aegis.Core/Aegis.Core.csproj -c Release --no-restore
+          dotnet build src/Aegis.Data/Aegis.Data.csproj -c Release --no-restore
+          dotnet build src/Aegis.Ipc/Aegis.Ipc.csproj -c Release --no-restore
+          dotnet build src/Aegis.FleetHub/Aegis.FleetHub.csproj -c Release --no-restore
+          dotnet build src/Aegis.Sensor/Aegis.Sensor.csproj -c Release --no-restore
+          dotnet build src/Aegis.ResponseActions/Aegis.ResponseActions.csproj -c Release --no-restore
+          dotnet build src/Aegis.Service/Aegis.Service.csproj -c Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/Aegis.Tests/Aegis.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=test-results.trx"
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-portable
+          path: AegisDefense/tests/Aegis.Tests/TestResults/test-results.trx
+
+  # Authoritative build: the full solution, including the WPF Aegis.Gui console, which
+  # cannot be cross-compiled - see AegisDefense/docs/ARCHITECTURE.md. A PR is not really
+  # green until this job passes even if the Linux job above did.
+  build-and-test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore AegisDefense.sln
+
+      - name: Build full solution (all 8 projects)
+        run: dotnet build AegisDefense.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/Aegis.Tests/Aegis.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=test-results.trx"
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows
+          path: AegisDefense/tests/Aegis.Tests/TestResults/test-results.trx
+
+  # Best-effort: builds the WiX installer. Not required to pass (the WiX toolset's own
+  # non-Windows warning aside, MSI packaging failures shouldn't block application code
+  # changes), but surfaces installer regressions early rather than only at release time.
+  build-installer:
+    runs-on: windows-latest
+    needs: build-and-test-windows
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add WixToolset.UI.wixext/5.0.2
+
+      - name: Publish service + console
+        run: |
+          dotnet publish src/Aegis.Service/Aegis.Service.csproj -c Release -r win-x64 --self-contained false -o installer/publish/service
+          dotnet publish src/Aegis.Gui/Aegis.Gui.csproj -c Release -r win-x64 --self-contained false -o installer/publish/gui
+
+      - name: Build MSI
+        run: dotnet build installer/AegisDefense.Installer.wixproj -c Release
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: AegisDefense-installer
+          path: AegisDefense/installer/bin/Release/*.msi

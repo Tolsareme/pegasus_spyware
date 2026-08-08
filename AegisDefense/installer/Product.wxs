@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="Aegis Autonomous Defense"
+           Manufacturer="Aegis Defense"
+           Version="2.0.0.0"
+           UpgradeCode="2f8f0b7a-6c9e-4b8a-9a0a-8a2b6d6a7e10"
+           Scope="perMachine">
+
+    <SummaryInformation Description="Behavioral detection, deception, and policy-bounded automated response for Windows endpoints and servers." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Aegis Autonomous Defense is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Same practical floor as the rest of the solution: .NET Framework 4.8 runs on Windows 7 SP1+/Server 2008 R2 SP1+. -->
+    <Launch Condition="Installed OR VersionNT >= 601" Message="Aegis Autonomous Defense requires Windows 7 SP1/Server 2008 R2 SP1 or later." />
+    <Launch Condition="Privileged" Message="Aegis Autonomous Defense must be installed by an administrator." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AegisDefense">
+        <Directory Id="SERVICEFOLDER" Name="Service" />
+        <Directory Id="CONSOLEFOLDER" Name="Console" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppProgramMenuFolder" Name="Aegis Defense" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="AEGISDATAFOLDER" Name="AegisDefense">
+        <Directory Id="AEGISDATA_DATA" Name="data" />
+        <Directory Id="AEGISDATA_LOGS" Name="logs" />
+        <Directory Id="AEGISDATA_KEYS" Name="keys" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Every file under the published service output, auto-componentized (WiX v5's Files harvesting - no heat.exe needed). -->
+    <ComponentGroup Id="ServiceFiles" Directory="SERVICEFOLDER">
+      <Files Include="$(var.ServicePublishDir)\**">
+        <Exclude Files="$(var.ServicePublishDir)\**\*.pdb" />
+      </Files>
+    </ComponentGroup>
+
+    <ComponentGroup Id="ConsoleFiles" Directory="CONSOLEFOLDER">
+      <Files Include="$(var.GuiPublishDir)\**">
+        <Exclude Files="$(var.GuiPublishDir)\**\*.pdb" />
+      </Files>
+    </ComponentGroup>
+
+    <!-- Windows Service registration: mirrors scripts/install-service.ps1 (LocalSystem, delayed auto-start, restart-on-failure). -->
+    <Component Id="ServiceRegistration" Directory="SERVICEFOLDER" Guid="6f6a9b1e-6a1a-4d3b-9c9a-3a2b6a9c9e21">
+      <File Id="ServiceExe" Source="$(var.ServicePublishDir)\AegisDefenseService.exe" KeyPath="yes" />
+      <ServiceInstall Id="AegisServiceInstall"
+                       Name="AegisDefenseService"
+                       DisplayName="Aegis Autonomous Defense Service"
+                       Description="Behavioral detection, attack-state estimation, deception and policy-bounded automated response for this host."
+                       Type="ownProcess"
+                       Start="auto"
+                       Account="LocalSystem"
+                       ErrorControl="normal" />
+      <ServiceControl Id="AegisServiceControl"
+                       Name="AegisDefenseService"
+                       Start="install"
+                       Stop="both"
+                       Remove="uninstall"
+                       Wait="yes" />
+    </Component>
+
+    <!-- ProgramData layout, created empty at install time (EventChainKeyStore/PolicyTrustStore/RollingFileLogger otherwise create these lazily on first service start, but pre-creating them lets an installer-time ACL-hardening step target a known path if one is added later). -->
+    <Component Id="AegisDataFolder" Directory="AEGISDATA_DATA" Guid="1a2b3c4d-1111-2222-3333-444455556601">
+      <CreateFolder />
+    </Component>
+    <Component Id="AegisLogsFolder" Directory="AEGISDATA_LOGS" Guid="1a2b3c4d-1111-2222-3333-444455556602">
+      <CreateFolder />
+    </Component>
+    <Component Id="AegisKeysFolder" Directory="AEGISDATA_KEYS" Guid="1a2b3c4d-1111-2222-3333-444455556603">
+      <CreateFolder />
+    </Component>
+
+    <Component Id="ConsoleShortcut" Directory="AppProgramMenuFolder" Guid="1a2b3c4d-1111-2222-3333-444455556604">
+      <Shortcut Id="ConsoleStartMenuShortcut"
+                Name="Aegis Defense Console"
+                Description="Alerts, statistics, events and autonomy controls for Aegis Autonomous Defense."
+                Target="[CONSOLEFOLDER]AegisDefenseConsole.exe"
+                WorkingDirectory="CONSOLEFOLDER" />
+      <RemoveFolder Id="RemoveAppProgramMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\AegisDefense" Name="ConsoleShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="Aegis Autonomous Defense" Level="1">
+      <ComponentGroupRef Id="ServiceFiles" />
+      <ComponentGroupRef Id="ConsoleFiles" />
+      <ComponentRef Id="ServiceRegistration" />
+      <ComponentRef Id="AegisDataFolder" />
+      <ComponentRef Id="AegisLogsFolder" />
+      <ComponentRef Id="AegisKeysFolder" />
+      <ComponentRef Id="ConsoleShortcut" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+  </Package>
+</Wix>
