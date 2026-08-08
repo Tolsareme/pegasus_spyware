@@ -1,4 +1,5 @@
 using Aegis.Core.Diagnostics;
+using Aegis.Core.Policy;
 using Aegis.Ipc;
 using Aegis.Ipc.Contracts;
 
@@ -10,14 +11,44 @@ public sealed class IpcRequestHandler
     private readonly DefenseEngine _engine;
     private readonly IAegisLogger _logger;
 
+    /// <summary>Message types that change state. An Analyst-role caller (v2 RBAC) may call anything else read-only but is refused these - enforced here, not just hidden in the GUI.</summary>
+    private static readonly HashSet<string> MutatingMessageTypes = new(StringComparer.Ordinal)
+    {
+        MessageTypes.UpdateAlertStatus,
+        MessageTypes.SetPolicy,
+        MessageTypes.ApproveAction,
+        MessageTypes.RejectAction,
+        MessageTypes.RegisterDecoy,
+        MessageTypes.RemoveDecoy,
+    };
+
     public IpcRequestHandler(DefenseEngine engine, IAegisLogger logger)
     {
         _engine = engine;
         _logger = logger;
     }
 
-    public async Task<IpcEnvelope> HandleAsync(IpcEnvelope request, CancellationToken ct)
+    public async Task<IpcEnvelope> HandleAsync(IpcEnvelope request, string? callerRoleRaw, CancellationToken ct)
     {
+        // No identifyCaller resolver configured (AegisPipeServer passes null) means RBAC isn't
+        // wired up on this deployment - fall back to the pre-RBAC behavior where the pipe's
+        // own ACL (Administrators + LocalSystem only) was the sole gate, so every caller who
+        // could connect at all is trusted with everything, exactly as before.
+        var role = callerRoleRaw is null
+            ? OperatorRole.Administrator
+            : Enum.TryParse<OperatorRole>(callerRoleRaw, out var parsed) ? parsed : OperatorRole.Unknown;
+
+        if (role == OperatorRole.Unknown)
+        {
+            _logger.Warn(nameof(IpcRequestHandler), $"Rejected request '{request.MessageType}' from an unrecognized caller (not Administrator or Analyst).");
+            return request.CreateErrorResponse("Caller could not be mapped to an authorized role.");
+        }
+
+        if (role == OperatorRole.Analyst && MutatingMessageTypes.Contains(request.MessageType))
+        {
+            return request.CreateErrorResponse($"'{request.MessageType}' requires the Administrator role - this session is Analyst (read-only).");
+        }
+
         try
         {
             switch (request.MessageType)
@@ -110,6 +141,10 @@ public sealed class IpcRequestHandler
                     var result = await _engine.VerifyEventChainAsync().ConfigureAwait(false);
                     return request.CreateResponse(MessageTypes.VerifyEventChain,
                         new VerifyEventChainResponse(result.Valid, result.FirstBrokenSequence, result.BreakReason.ToString(), result.LinksChecked));
+                }
+                case MessageTypes.WhoAmI:
+                {
+                    return request.CreateResponse(MessageTypes.WhoAmI, new WhoAmIResponse(role, callerRoleRaw));
                 }
                 default:
                     return request.CreateErrorResponse($"Unknown message type '{request.MessageType}'.");

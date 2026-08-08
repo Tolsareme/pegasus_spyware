@@ -16,6 +16,7 @@
                 <Ellipse Width="10" Height="10" Margin="8,0,4,0" VerticalAlignment="Center"
                          Fill="{Binding IsConnected, Converter={StaticResource BoolToStatusBrush}}"/>
                 <TextBlock Text="{Binding ConnectionStatus}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <TextBlock Text="{Binding RoleDescription}" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="{StaticResource MutedTextBrush}"/>
                 <Button Content="Reconnect" Command="{Binding ConnectCommand}"/>
                 <Button Content="Refresh Now" Command="{Binding RefreshCommand}"/>
                 <Button Content="Verify Event Chain" Command="{Binding VerifyEventChainCommand}" ToolTip="Recomputes the tamper-evident event hash chain end-to-end and reports the first broken/missing record, if any."/>
@@ -105,8 +106,8 @@
             <TabItem Header="Alerts">
                 <DockPanel Margin="8">
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
-                        <Button Content="Acknowledge" Command="{Binding AckAlertCommand}" CommandParameter="{Binding SelectedAlert}"/>
-                        <Button Content="Mark Investigating" Command="{Binding ContainAlertHostCommand}" CommandParameter="{Binding SelectedAlert}"/>
+                        <Button Content="Acknowledge" Command="{Binding AckAlertCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"/>
+                        <Button Content="Mark Investigating" Command="{Binding ContainAlertHostCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"/>
                     </StackPanel>
                     <DataGrid x:Name="AlertsGrid" ItemsSource="{Binding Alerts}" SelectedItem="{Binding SelectedAlert}">
                         <DataGrid.Columns>
@@ -145,7 +146,8 @@
             <!-- ===================== POLICY & AUTONOMY CONTROLS ===================== -->
             <TabItem Header="Policy &amp; Autonomy">
                 <ScrollViewer>
-                    <StackPanel Margin="8" DataContext="{Binding ActivePolicy}">
+                    <StackPanel Margin="8" DataContext="{Binding ActivePolicy}"
+                                IsEnabled="{Binding DataContext.IsAdministrator, RelativeSource={RelativeSource FindAncestor, AncestorType=Window}}">
                         <TextBlock Text="Every change here is signed with this operator's key and verified by the service before it takes effect. Nothing is applied until you click Save &amp; Apply." Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,10" TextWrapping="Wrap"/>
 
                         <GroupBox Header="Detection &amp; response engines">
@@ -229,7 +231,7 @@
             <TabItem Header="Deception">
                 <DockPanel Margin="8">
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
-                        <Button Content="Remove Selected Decoy" Command="{Binding RemoveDecoyCommand}" CommandParameter="{Binding SelectedDecoy}"/>
+                        <Button Content="Remove Selected Decoy" Command="{Binding RemoveDecoyCommand}" CommandParameter="{Binding SelectedDecoy}" IsEnabled="{Binding IsAdministrator}"/>
                     </StackPanel>
                     <DataGrid ItemsSource="{Binding Decoys}" SelectedItem="{Binding SelectedDecoy}">
                         <DataGrid.Columns>
@@ -264,8 +266,8 @@
             <TabItem Header="Approvals">
                 <DockPanel Margin="8">
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
-                        <Button Content="Approve &amp; Execute" Command="{Binding ApproveCommand}" CommandParameter="{Binding SelectedApproval}"/>
-                        <Button Content="Reject" Command="{Binding RejectCommand}" CommandParameter="{Binding SelectedApproval}"/>
+                        <Button Content="Approve &amp; Execute" Command="{Binding ApproveCommand}" CommandParameter="{Binding SelectedApproval}" IsEnabled="{Binding IsAdministrator}"/>
+                        <Button Content="Reject" Command="{Binding RejectCommand}" CommandParameter="{Binding SelectedApproval}" IsEnabled="{Binding IsAdministrator}"/>
                     </StackPanel>
                     <DataGrid ItemsSource="{Binding PendingApprovals}" SelectedItem="{Binding SelectedApproval}">
                         <DataGrid.Columns>

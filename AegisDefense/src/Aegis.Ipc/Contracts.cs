@@ -30,6 +30,7 @@ public static class MessageTypes
     public const string GetVulnerabilities = "GetVulnerabilities";
     public const string GetServiceHealth = "GetServiceHealth";
     public const string VerifyEventChain = "VerifyEventChain";
+    public const string WhoAmI = "WhoAmI";
 }
 
 public sealed record GetAlertsRequest(string? HostId, AlertStatus? StatusFilter, int Take = 200);
@@ -98,3 +99,6 @@ public sealed record GetServiceHealthResponse(bool Healthy, string Version, Date
 
 public sealed record VerifyEventChainRequest;
 public sealed record VerifyEventChainResponse(bool Valid, long? FirstBrokenSequence, string? BreakReason, int LinksChecked);
+
+public sealed record WhoAmIRequest;
+public sealed record WhoAmIResponse(OperatorRole Role, string? WindowsIdentity);

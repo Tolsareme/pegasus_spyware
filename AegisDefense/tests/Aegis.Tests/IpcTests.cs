@@ -15,7 +15,7 @@ public class IpcTests
 
         await using var server = new AegisPipeServer(
             pipeFactory: () => new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous),
-            handler: (envelope, ct) =>
+            handler: (envelope, callerRole, ct) =>
             {
                 if (envelope.MessageType == MessageTypes.GetServiceHealth)
                 {
@@ -43,7 +43,7 @@ public class IpcTests
 
         await using var server = new AegisPipeServer(
             pipeFactory: () => new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous),
-            handler: (envelope, ct) => Task.FromResult(envelope.CreateErrorResponse("policy signature invalid")));
+            handler: (envelope, callerRole, ct) => Task.FromResult(envelope.CreateErrorResponse("policy signature invalid")));
         server.Start();
 
         await using var client = new AegisPipeClient(pipeName);
@@ -53,6 +53,53 @@ public class IpcTests
             client.RequestAsync<GetPolicyRequest, GetPolicyResponse>(MessageTypes.GetPolicy, new GetPolicyRequest()));
 
         Assert.Contains("policy signature invalid", ex.Message);
+    }
+
+    [Fact]
+    public async Task Server_ThreadsIdentifyCallerResult_ThroughToHandler()
+    {
+        var pipeName = "aegis-tests-" + Guid.NewGuid().ToString("N");
+        string? observedCallerRole = null;
+
+        await using var server = new AegisPipeServer(
+            pipeFactory: () => new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous),
+            handler: (envelope, callerRole, ct) =>
+            {
+                observedCallerRole = callerRole;
+                return Task.FromResult(envelope.CreateResponse(MessageTypes.GetServiceHealth,
+                    new GetServiceHealthResponse(true, "1.0.0-test", DateTimeOffset.UtcNow, Array.Empty<string>())));
+            },
+            identifyCaller: _ => "Analyst");
+        server.Start();
+
+        await using var client = new AegisPipeClient(pipeName);
+        await client.ConnectAsync();
+        await client.RequestAsync<GetServiceHealthRequest, GetServiceHealthResponse>(MessageTypes.GetServiceHealth, new GetServiceHealthRequest());
+
+        Assert.Equal("Analyst", observedCallerRole);
+    }
+
+    [Fact]
+    public async Task Server_PassesNullCallerContext_WhenIdentifyCallerNotSupplied()
+    {
+        var pipeName = "aegis-tests-" + Guid.NewGuid().ToString("N");
+        var sawNullContext = false;
+
+        await using var server = new AegisPipeServer(
+            pipeFactory: () => new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous),
+            handler: (envelope, callerRole, ct) =>
+            {
+                sawNullContext = callerRole is null;
+                return Task.FromResult(envelope.CreateResponse(MessageTypes.GetServiceHealth,
+                    new GetServiceHealthResponse(true, "1.0.0-test", DateTimeOffset.UtcNow, Array.Empty<string>())));
+            });
+        server.Start();
+
+        await using var client = new AegisPipeClient(pipeName);
+        await client.ConnectAsync();
+        await client.RequestAsync<GetServiceHealthRequest, GetServiceHealthResponse>(MessageTypes.GetServiceHealth, new GetServiceHealthRequest());
+
+        Assert.True(sawNullContext);
     }
 
     [Fact]

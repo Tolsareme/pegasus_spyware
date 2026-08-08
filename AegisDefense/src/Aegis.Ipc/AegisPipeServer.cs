@@ -10,18 +10,31 @@ namespace Aegis.Ipc;
 /// pipe instance with the correct <c>PipeSecurity</c> restricting access to
 /// Administrators + LocalSystem. That keeps this library free of Windows-only
 /// <c>System.IO.Pipes.AccessControl</c> types and buildable/testable on any OS.
+///
+/// Likewise knows nothing about *who* the caller is or what role they map to (v2 RBAC) -
+/// <paramref name="identifyCaller"/> (if supplied) is invoked once per connection and its
+/// result is threaded through to every request on that connection as an opaque string; it
+/// is up to the host to decide what that string means (e.g. "Administrator"/"Analyst") and
+/// up to the handler to enforce it. When <paramref name="identifyCaller"/> is omitted, every
+/// request gets a null caller context, which <c>Aegis.Service.IpcRequestHandler</c> treats
+/// as fully trusted - matching the pre-RBAC behavior where the pipe's ACL alone was the gate.
 /// </summary>
 public sealed class AegisPipeServer : IAsyncDisposable
 {
     private readonly Func<NamedPipeServerStream> _pipeFactory;
-    private readonly Func<IpcEnvelope, CancellationToken, Task<IpcEnvelope>> _handler;
+    private readonly Func<IpcEnvelope, string?, CancellationToken, Task<IpcEnvelope>> _handler;
+    private readonly Func<NamedPipeServerStream, string?>? _identifyCaller;
     private readonly CancellationTokenSource _cts = new();
     private Task? _acceptLoop;
 
-    public AegisPipeServer(Func<NamedPipeServerStream> pipeFactory, Func<IpcEnvelope, CancellationToken, Task<IpcEnvelope>> handler)
+    public AegisPipeServer(
+        Func<NamedPipeServerStream> pipeFactory,
+        Func<IpcEnvelope, string?, CancellationToken, Task<IpcEnvelope>> handler,
+        Func<NamedPipeServerStream, string?>? identifyCaller = null)
     {
         _pipeFactory = pipeFactory;
         _handler = handler;
+        _identifyCaller = identifyCaller;
     }
 
     public void Start()
@@ -72,6 +85,16 @@ public sealed class AegisPipeServer : IAsyncDisposable
         {
             try
             {
+                // Resolved once per connection, not per message - the caller's identity/role
+                // can't change mid-connection, and impersonation (what a real resolver does
+                // under the hood) is comparatively expensive to redo for every request.
+                string? callerContext = null;
+                if (_identifyCaller is not null)
+                {
+                    try { callerContext = _identifyCaller(pipe); }
+                    catch { /* fail closed to null (untrusted) rather than let a resolver bug crash the connection */ }
+                }
+
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
 
@@ -95,7 +118,7 @@ public sealed class AegisPipeServer : IAsyncDisposable
 
                     try
                     {
-                        response = await _handler(request, ct).ConfigureAwait(false);
+                        response = await _handler(request, callerContext, ct).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {

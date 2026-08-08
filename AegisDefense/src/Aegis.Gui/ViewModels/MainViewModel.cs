@@ -41,6 +41,31 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
 
     public bool HasSigningKey => _keyManager.HasKey;
 
+    private OperatorRole _role = OperatorRole.Administrator;
+    /// <summary>Server-confirmed role for this connection (v2 RBAC). Defaults to Administrator optimistically until the first WhoAmI response arrives, since the pipe's ACL already means only a trusted account could connect at all in the pre-RBAC/no-Analyst-group-provisioned case.</summary>
+    public OperatorRole Role
+    {
+        get => _role;
+        set
+        {
+            if (SetField(ref _role, value))
+            {
+                OnPropertyChanged(nameof(IsAdministrator));
+                OnPropertyChanged(nameof(RoleDescription));
+            }
+        }
+    }
+
+    /// <summary>Bound to IsEnabled on every mutating control - the GUI's convenience mirror of the authoritative server-side check in IpcRequestHandler.</summary>
+    public bool IsAdministrator => Role == OperatorRole.Administrator;
+
+    public string RoleDescription => Role switch
+    {
+        OperatorRole.Administrator => "Administrator (full control)",
+        OperatorRole.Analyst => "Analyst (read-only)",
+        _ => "Unknown",
+    };
+
     private Alert? _selectedAlert;
     public Alert? SelectedAlert { get => _selectedAlert; set => SetField(ref _selectedAlert, value); }
 
@@ -135,7 +160,10 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
             var policy = await _client.RequestAsync<GetPolicyRequest, GetPolicyResponse>(MessageTypes.GetPolicy, new GetPolicyRequest()).ConfigureAwait(true);
             ActivePolicy = policy.Policy;
 
-            StatusMessage = $"Refreshed at {DateTimeOffset.Now:T}.";
+            var whoAmI = await _client.RequestAsync<WhoAmIRequest, WhoAmIResponse>(MessageTypes.WhoAmI, new WhoAmIRequest()).ConfigureAwait(true);
+            Role = whoAmI.Role;
+
+            StatusMessage = $"Refreshed at {DateTimeOffset.Now:T}. Role: {RoleDescription}.";
         }
         catch (Exception ex)
         {

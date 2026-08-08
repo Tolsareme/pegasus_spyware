@@ -53,7 +53,10 @@ public sealed class ServiceHost
         await _engine.StartAsync().ConfigureAwait(false);
 
         var requestHandler = new IpcRequestHandler(_engine, _logger);
-        _pipeServer = new AegisPipeServer(PipeServerFactory.CreateSecured, requestHandler.HandleAsync);
+        _pipeServer = new AegisPipeServer(
+            PipeServerFactory.CreateSecured,
+            requestHandler.HandleAsync,
+            identifyCaller: pipe => WindowsCallerRoleResolver.Resolve(pipe, _logger));
         _pipeServer.Start();
 
         _logger.Info(nameof(ServiceHost), "Aegis Defense Service started - control pipe listening.");
