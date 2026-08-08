@@ -7,6 +7,7 @@ using Aegis.Core.Features;
 using Aegis.Core.Fleet;
 using Aegis.Core.Graph;
 using Aegis.Core.Integrity;
+using Aegis.Core.Patching;
 using Aegis.Core.Policy;
 using Aegis.Core.Response;
 using Aegis.Core.Rules;
@@ -37,6 +38,7 @@ public sealed class DefenseEngine
     private readonly VulnerabilityRepository _vulnerabilities;
     private readonly DecoyRepository _decoyStore;
     private readonly ApprovalRepository _approvals;
+    private readonly PatchPlanRepository _patchPlans;
     private readonly PolicyTrustStore _trustStore;
     private readonly IResponseExecutor _responseExecutor;
     private readonly CollectorHost _collectors;
@@ -47,6 +49,7 @@ public sealed class DefenseEngine
     private readonly AttackStateGraph _graph = new();
     private readonly AttackStateEstimator _stateEstimator = new();
     private readonly ResponsePolicyEngine _responsePolicyEngine = new();
+    private readonly PatchRolloutOrchestrator _patchOrchestrator = new();
     private readonly IProcessBaseline _baseline = new InMemoryProcessBaseline();
     private readonly IAnomalyModel _anomalyModel = new StatisticalAnomalyModel();
 
@@ -81,6 +84,7 @@ public sealed class DefenseEngine
         _vulnerabilities = new VulnerabilityRepository(db);
         _decoyStore = new DecoyRepository(db);
         _approvals = new ApprovalRepository(db);
+        _patchPlans = new PatchPlanRepository(db);
         _trustStore = trustStore;
         _responseExecutor = responseExecutor;
         _collectors = new CollectorHost(logger);
@@ -601,6 +605,75 @@ public sealed class DefenseEngine
         }
         return removed;
     }
+
+    // --- Patch rollout orchestration (doc §18) -----------------------------------------
+    //
+    // Every mutating method here loads the plan fresh from storage, applies exactly one
+    // orchestrator transition, persists the result, and returns it - there is deliberately
+    // no long-lived in-memory plan cache to keep in sync with the database, since this is a
+    // low-frequency, operator-driven workflow (unlike the hot event-ingestion path) where
+    // "always read the latest persisted state" is simpler and safer than cache invalidation.
+    // PatchRolloutOrchestrator itself has no OS integration (see docs/ARCHITECTURE.md) - health
+    // checks are supplied by the caller (an operator, or eventually a real monitoring
+    // integration), not executed by this engine.
+
+    public async Task<PatchRolloutPlan> CreatePatchPlanAsync(string component, string vendorAdvisoryReference, IReadOnlyList<RingDefinition> rings)
+    {
+        var plan = new PatchRolloutPlan { Component = component, VendorAdvisoryReference = vendorAdvisoryReference, Rings = rings };
+        await _patchPlans.UpsertAsync(plan).ConfigureAwait(false);
+        _logger.LogAudit(nameof(DefenseEngine), "PatchPlanCreated", HostId, "Success", $"plan={plan.PlanId} component={component} advisory={vendorAdvisoryReference} rings={rings.Count}");
+        return plan;
+    }
+
+    public Task<IReadOnlyList<PatchRolloutPlan>> ListPatchPlansAsync() => _patchPlans.ListAsync();
+
+    public Task<PatchRolloutPlan?> GetPatchPlanAsync(Guid planId) => _patchPlans.GetAsync(planId);
+
+    /// <summary>Runs one guarded orchestrator transition against the persisted plan and saves
+    /// the result. <paramref name="transition"/> is expected to throw <see cref="InvalidOperationException"/>
+    /// (as every <see cref="PatchRolloutOrchestrator"/> method does) if the plan isn't in a
+    /// valid stage for the requested transition - that's reported back as a normal failure,
+    /// not an unhandled exception, since "wrong stage" is an expected, recoverable caller
+    /// error (e.g. a stale GUI view), not a bug.</summary>
+    private async Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> ApplyPatchTransitionAsync(Guid planId, Func<PatchRolloutPlan, PatchRolloutPlan> transition, string auditAction)
+    {
+        var plan = await _patchPlans.GetAsync(planId).ConfigureAwait(false);
+        if (plan is null) return (false, $"No patch rollout plan found with id '{planId}'.", null);
+
+        try
+        {
+            transition(plan);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return (false, ex.Message, plan);
+        }
+
+        await _patchPlans.UpsertAsync(plan).ConfigureAwait(false);
+        _logger.LogAudit(nameof(DefenseEngine), auditAction, HostId, "Success", $"plan={plan.PlanId} stage={plan.Stage}");
+        return (true, null, plan);
+    }
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> ApplyPatchMitigationAsync(Guid planId, string reason) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.ApplyTemporaryMitigation(p, reason), "PatchMitigationApplied");
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> BeginPatchCanaryTestingAsync(Guid planId, string reason) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.BeginCanaryTesting(p, reason), "PatchCanaryTestingStarted");
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> RecordPatchCanaryHealthCheckAsync(Guid planId, HealthCheckResult result) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.RecordCanaryHealthCheck(p, result), "PatchCanaryHealthCheckRecorded");
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> BeginPatchRingDeploymentAsync(Guid planId, string reason) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.BeginRingDeployment(p, reason), "PatchRingDeploymentStarted");
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> RecordPatchRingHealthCheckAsync(Guid planId, HealthCheckResult result) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.RecordRingHealthCheck(p, result), "PatchRingHealthCheckRecorded");
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> ClosePatchMitigationAsync(Guid planId, string reason) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.CloseMitigationAfterVerification(p, reason), "PatchMitigationClosed");
+
+    public Task<(bool Success, string? Error, PatchRolloutPlan? Plan)> RollbackPatchPlanAsync(Guid planId, string reason) =>
+        ApplyPatchTransitionAsync(planId, p => _patchOrchestrator.Rollback(p, reason), "PatchPlanRolledBack");
 
     public async Task<(bool Executed, string? Detail)> ApproveActionAsync(Guid approvalId, string approvedBy)
     {

@@ -58,7 +58,7 @@ dotnet test tests/Aegis.Tests/Aegis.Tests.csproj
 Every project in `AegisDefense.sln`, including the WPF `Aegis.Gui` console, builds with
 zero errors/warnings via `dotnet build AegisDefense.sln` — verified during development. The
 portable projects (`Aegis.Core`, `Aegis.Data`, `Aegis.Ipc`, `Aegis.FleetHub`) additionally
-run their full xUnit suite (98 tests, including real HTTP integration tests against the
+run their full xUnit suite (103 tests, including real HTTP integration tests against the
 Fleet Hub) on any OS with the .NET 8 SDK. Compiling is not the same as running, though:
 `Aegis.Sensor`/`Aegis.ResponseActions`/`Aegis.Service`/`Aegis.Gui` all call Windows-only
 APIs (WMI, ETW, the Security event log, named-pipe ACLs, `netsh`/`sc.exe`, Active

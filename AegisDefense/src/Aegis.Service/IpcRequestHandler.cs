@@ -20,6 +20,14 @@ public sealed class IpcRequestHandler
         MessageTypes.RejectAction,
         MessageTypes.RegisterDecoy,
         MessageTypes.RemoveDecoy,
+        MessageTypes.CreatePatchPlan,
+        MessageTypes.ApplyPatchMitigation,
+        MessageTypes.BeginPatchCanaryTesting,
+        MessageTypes.RecordPatchCanaryHealthCheck,
+        MessageTypes.BeginPatchRingDeployment,
+        MessageTypes.RecordPatchRingHealthCheck,
+        MessageTypes.ClosePatchMitigation,
+        MessageTypes.RollbackPatchPlan,
     };
 
     public IpcRequestHandler(DefenseEngine engine, IAegisLogger logger)
@@ -168,6 +176,59 @@ public sealed class IpcRequestHandler
                 {
                     var hosts = await _engine.GetHostInventoryAsync().ConfigureAwait(false);
                     return request.CreateResponse(MessageTypes.GetHostInventory, new GetHostInventoryResponse(hosts));
+                }
+                case MessageTypes.ListPatchPlans:
+                {
+                    var plans = await _engine.ListPatchPlansAsync().ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.ListPatchPlans, new ListPatchPlansResponse(plans));
+                }
+                case MessageTypes.CreatePatchPlan:
+                {
+                    var req = request.DeserializePayload<CreatePatchPlanRequest>()!;
+                    var plan = await _engine.CreatePatchPlanAsync(req.Component, req.VendorAdvisoryReference, req.Rings).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.CreatePatchPlan, new PatchPlanActionResponse(true, null, plan));
+                }
+                case MessageTypes.ApplyPatchMitigation:
+                {
+                    var req = request.DeserializePayload<ApplyPatchMitigationRequest>()!;
+                    var (success, error, plan) = await _engine.ApplyPatchMitigationAsync(req.PlanId, req.Reason).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.ApplyPatchMitigation, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.BeginPatchCanaryTesting:
+                {
+                    var req = request.DeserializePayload<BeginPatchCanaryTestingRequest>()!;
+                    var (success, error, plan) = await _engine.BeginPatchCanaryTestingAsync(req.PlanId, req.Reason).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.BeginPatchCanaryTesting, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.RecordPatchCanaryHealthCheck:
+                {
+                    var req = request.DeserializePayload<RecordPatchCanaryHealthCheckRequest>()!;
+                    var (success, error, plan) = await _engine.RecordPatchCanaryHealthCheckAsync(req.PlanId, req.Result).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RecordPatchCanaryHealthCheck, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.BeginPatchRingDeployment:
+                {
+                    var req = request.DeserializePayload<BeginPatchRingDeploymentRequest>()!;
+                    var (success, error, plan) = await _engine.BeginPatchRingDeploymentAsync(req.PlanId, req.Reason).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.BeginPatchRingDeployment, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.RecordPatchRingHealthCheck:
+                {
+                    var req = request.DeserializePayload<RecordPatchRingHealthCheckRequest>()!;
+                    var (success, error, plan) = await _engine.RecordPatchRingHealthCheckAsync(req.PlanId, req.Result).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RecordPatchRingHealthCheck, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.ClosePatchMitigation:
+                {
+                    var req = request.DeserializePayload<ClosePatchMitigationRequest>()!;
+                    var (success, error, plan) = await _engine.ClosePatchMitigationAsync(req.PlanId, req.Reason).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.ClosePatchMitigation, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.RollbackPatchPlan:
+                {
+                    var req = request.DeserializePayload<RollbackPatchPlanRequest>()!;
+                    var (success, error, plan) = await _engine.RollbackPatchPlanAsync(req.PlanId, req.Reason).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.RollbackPatchPlan, new PatchPlanActionResponse(success, error, plan));
                 }
                 default:
                     return request.CreateErrorResponse($"Unknown message type '{request.MessageType}'.");

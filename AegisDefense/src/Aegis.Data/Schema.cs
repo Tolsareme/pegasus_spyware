@@ -101,5 +101,14 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     resolution_note TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_approvals_resolution ON pending_approvals(resolution);
+
+CREATE TABLE IF NOT EXISTS patch_rollout_plans (
+    plan_id TEXT PRIMARY KEY,
+    component TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_patch_plans_stage ON patch_rollout_plans(stage);
 ";
 }

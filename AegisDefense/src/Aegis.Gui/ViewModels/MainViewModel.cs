@@ -5,6 +5,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Aegis.Core.Deception;
 using Aegis.Core.Events;
+using Aegis.Core.Patching;
 using Aegis.Core.Policy;
 using Aegis.Core.Vulnerability;
 using Aegis.Gui.Services;
@@ -27,6 +28,7 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     public ObservableCollection<HostInventoryEntry> Hosts { get; } = new();
     public ObservableCollection<GraphNodeViewModel> PositionedGraphNodes { get; } = new();
     public ObservableCollection<GraphEdgeViewModel> PositionedGraphEdges { get; } = new();
+    public ObservableCollection<PatchRolloutPlan> PatchPlans { get; } = new();
 
     /// <summary>Raised when a refresh discovers a Critical-severity alert this session hasn't already seen - MainWindow subscribes to surface a tray balloon notification (v2).</summary>
     public event Action<Alert>? NewCriticalAlert;
@@ -85,6 +87,18 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     private string _graphNodeIdInput = "";
     public string GraphNodeIdInput { get => _graphNodeIdInput; set => SetField(ref _graphNodeIdInput, value); }
 
+    private PatchRolloutPlan? _selectedPatchPlan;
+    public PatchRolloutPlan? SelectedPatchPlan { get => _selectedPatchPlan; set => SetField(ref _selectedPatchPlan, value); }
+
+    private string _newPatchComponent = "";
+    public string NewPatchComponent { get => _newPatchComponent; set => SetField(ref _newPatchComponent, value); }
+
+    private string _newPatchAdvisoryReference = "";
+    public string NewPatchAdvisoryReference { get => _newPatchAdvisoryReference; set => SetField(ref _newPatchAdvisoryReference, value); }
+
+    private string _newPatchRingsCsv = "canary:1,everyone:9999";
+    public string NewPatchRingsCsv { get => _newPatchRingsCsv; set => SetField(ref _newPatchRingsCsv, value); }
+
     // --- Trend history (client-side; the service only ever exposes point-in-time statistics) ---
     private const int MaxTrendPoints = 60; // 5 minutes at the 5s refresh interval
     private readonly List<double> _riskHistory = new();
@@ -108,6 +122,14 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     public RelayCommand RemoveDecoyCommand { get; }
     public RelayCommand VerifyEventChainCommand { get; }
     public RelayCommand LoadGraphCommand { get; }
+    public RelayCommand CreatePatchPlanCommand { get; }
+    public RelayCommand ApplyPatchMitigationCommand { get; }
+    public RelayCommand BeginPatchCanaryTestingCommand { get; }
+    public RelayCommand RecordHealthyHealthCheckCommand { get; }
+    public RelayCommand RecordUnhealthyHealthCheckCommand { get; }
+    public RelayCommand BeginPatchRingDeploymentCommand { get; }
+    public RelayCommand ClosePatchMitigationCommand { get; }
+    public RelayCommand RollbackPatchPlanCommand { get; }
 
     private bool _hasCompletedFirstRefresh;
 
@@ -125,6 +147,14 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
         RemoveDecoyCommand = new RelayCommand(p => RemoveDecoyAsync(p as DecoyResourceDefinition));
         VerifyEventChainCommand = new RelayCommand(_ => VerifyEventChainAsync());
         LoadGraphCommand = new RelayCommand(_ => LoadGraphAsync());
+        CreatePatchPlanCommand = new RelayCommand(_ => CreatePatchPlanAsync());
+        ApplyPatchMitigationCommand = new RelayCommand(_ => ApplyPatchMitigationAsync());
+        BeginPatchCanaryTestingCommand = new RelayCommand(_ => BeginPatchCanaryTestingAsync());
+        RecordHealthyHealthCheckCommand = new RelayCommand(_ => RecordPatchHealthCheckAsync(healthy: true));
+        RecordUnhealthyHealthCheckCommand = new RelayCommand(_ => RecordPatchHealthCheckAsync(healthy: false));
+        BeginPatchRingDeploymentCommand = new RelayCommand(_ => BeginPatchRingDeploymentAsync());
+        ClosePatchMitigationCommand = new RelayCommand(_ => ClosePatchMitigationAsync());
+        RollbackPatchPlanCommand = new RelayCommand(_ => RollbackPatchPlanAsync());
 
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _refreshTimer.Tick += async (_, _) => await RefreshAllAsync().ConfigureAwait(true);
@@ -186,6 +216,9 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
 
             var decoys = await _client.RequestAsync<ListDecoysRequest, ListDecoysResponse>(MessageTypes.ListDecoys, new ListDecoysRequest()).ConfigureAwait(true);
             ReplaceAll(Decoys, decoys.Decoys);
+
+            var patchPlans = await _client.RequestAsync<ListPatchPlansRequest, ListPatchPlansResponse>(MessageTypes.ListPatchPlans, new ListPatchPlansRequest()).ConfigureAwait(true);
+            ReplaceAll(PatchPlans, patchPlans.Plans);
 
             var policy = await _client.RequestAsync<GetPolicyRequest, GetPolicyResponse>(MessageTypes.GetPolicy, new GetPolicyRequest()).ConfigureAwait(true);
             ActivePolicy = policy.Policy;
@@ -267,6 +300,115 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     {
         if (decoy is null || _client is null) return;
         await _client.RequestAsync<RemoveDecoyRequest, RemoveDecoyResponse>(MessageTypes.RemoveDecoy, new RemoveDecoyRequest(decoy.Id)).ConfigureAwait(true);
+        await RefreshAllAsync().ConfigureAwait(true);
+    }
+
+    // --- Patch rollout orchestration (doc §18) ---
+    // There is no automated health-check integration wired up yet (see docs/ARCHITECTURE.md) -
+    // "healthy"/"unhealthy" here is an explicit operator judgment call recorded through the
+    // same guarded state machine a real monitoring integration would eventually drive.
+
+    private async Task CreatePatchPlanAsync()
+    {
+        if (_client is null) return;
+        if (string.IsNullOrWhiteSpace(NewPatchComponent) || string.IsNullOrWhiteSpace(NewPatchAdvisoryReference))
+        {
+            StatusMessage = "Enter a component name and vendor advisory reference before creating a patch plan.";
+            return;
+        }
+
+        var rings = ParseRings(NewPatchRingsCsv);
+        if (rings.Count == 0)
+        {
+            StatusMessage = "Could not parse rings - use the format 'name:count,name:count' (e.g. 'canary:1,everyone:500').";
+            return;
+        }
+
+        await _client.RequestAsync<CreatePatchPlanRequest, PatchPlanActionResponse>(
+            MessageTypes.CreatePatchPlan, new CreatePatchPlanRequest(NewPatchComponent.Trim(), NewPatchAdvisoryReference.Trim(), rings)).ConfigureAwait(true);
+        NewPatchComponent = "";
+        NewPatchAdvisoryReference = "";
+        StatusMessage = "Patch rollout plan created (stage: Assessed).";
+        await RefreshAllAsync().ConfigureAwait(true);
+    }
+
+    private static IReadOnlyList<RingDefinition> ParseRings(string csv)
+    {
+        var rings = new List<RingDefinition>();
+        foreach (var token in csv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = token.Split(':');
+            if (parts.Length != 2) continue;
+            if (!int.TryParse(parts[1].Trim(), out var count)) continue;
+            var name = parts[0].Trim();
+            if (name.Length == 0) continue;
+            rings.Add(new RingDefinition { Name = name, TargetHostCount = count });
+        }
+        return rings;
+    }
+
+    private async Task ApplyPatchMitigationAsync() =>
+        await RunPatchActionAsync(async () => await _client!.RequestAsync<ApplyPatchMitigationRequest, PatchPlanActionResponse>(
+            MessageTypes.ApplyPatchMitigation, new ApplyPatchMitigationRequest(SelectedPatchPlan!.PlanId, "Applied via console")).ConfigureAwait(true)).ConfigureAwait(true);
+
+    private async Task BeginPatchCanaryTestingAsync() =>
+        await RunPatchActionAsync(async () => await _client!.RequestAsync<BeginPatchCanaryTestingRequest, PatchPlanActionResponse>(
+            MessageTypes.BeginPatchCanaryTesting, new BeginPatchCanaryTestingRequest(SelectedPatchPlan!.PlanId, "Started via console")).ConfigureAwait(true)).ConfigureAwait(true);
+
+    private async Task BeginPatchRingDeploymentAsync() =>
+        await RunPatchActionAsync(async () => await _client!.RequestAsync<BeginPatchRingDeploymentRequest, PatchPlanActionResponse>(
+            MessageTypes.BeginPatchRingDeployment, new BeginPatchRingDeploymentRequest(SelectedPatchPlan!.PlanId, "Started via console")).ConfigureAwait(true)).ConfigureAwait(true);
+
+    private async Task ClosePatchMitigationAsync() =>
+        await RunPatchActionAsync(async () => await _client!.RequestAsync<ClosePatchMitigationRequest, PatchPlanActionResponse>(
+            MessageTypes.ClosePatchMitigation, new ClosePatchMitigationRequest(SelectedPatchPlan!.PlanId, "Closed via console after verification")).ConfigureAwait(true)).ConfigureAwait(true);
+
+    private async Task RollbackPatchPlanAsync() =>
+        await RunPatchActionAsync(async () => await _client!.RequestAsync<RollbackPatchPlanRequest, PatchPlanActionResponse>(
+            MessageTypes.RollbackPatchPlan, new RollbackPatchPlanRequest(SelectedPatchPlan!.PlanId, "Rolled back via console")).ConfigureAwait(true)).ConfigureAwait(true);
+
+    private async Task RecordPatchHealthCheckAsync(bool healthy)
+    {
+        if (SelectedPatchPlan is null || _client is null) return;
+
+        var result = healthy
+            ? HealthCheckResult.Healthy()
+            : new HealthCheckResult
+            {
+                ApplicationHealthy = false, ServiceHealthy = false, BootHealthy = true, AuthenticationHealthy = true, NetworkHealthy = true,
+                Notes = new[] { "Marked unhealthy via console (manual operator judgment - no automated health probe wired up yet)." },
+            };
+
+        if (SelectedPatchPlan.Stage == PatchRolloutStage.CanaryTesting)
+        {
+            await RunPatchActionAsync(async () => await _client.RequestAsync<RecordPatchCanaryHealthCheckRequest, PatchPlanActionResponse>(
+                MessageTypes.RecordPatchCanaryHealthCheck, new RecordPatchCanaryHealthCheckRequest(SelectedPatchPlan.PlanId, result)).ConfigureAwait(true)).ConfigureAwait(true);
+        }
+        else if (SelectedPatchPlan.Stage == PatchRolloutStage.RingDeployment)
+        {
+            await RunPatchActionAsync(async () => await _client.RequestAsync<RecordPatchRingHealthCheckRequest, PatchPlanActionResponse>(
+                MessageTypes.RecordPatchRingHealthCheck, new RecordPatchRingHealthCheckRequest(SelectedPatchPlan.PlanId, result)).ConfigureAwait(true)).ConfigureAwait(true);
+        }
+        else
+        {
+            StatusMessage = $"Plan is at stage '{SelectedPatchPlan.Stage}' - no health check applies here (expected CanaryTesting or RingDeployment).";
+        }
+    }
+
+    private async Task RunPatchActionAsync(Func<Task<PatchPlanActionResponse>> action)
+    {
+        if (SelectedPatchPlan is null || _client is null) return;
+        try
+        {
+            var response = await action().ConfigureAwait(true);
+            StatusMessage = response.Success
+                ? $"Patch plan '{response.Plan?.Component}' now at stage '{response.Plan?.Stage}'."
+                : $"Patch plan action rejected: {response.Error}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Patch plan action failed: {ex.Message}";
+        }
         await RefreshAllAsync().ConfigureAwait(true);
     }
 

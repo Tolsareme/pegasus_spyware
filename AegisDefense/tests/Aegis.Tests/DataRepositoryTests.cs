@@ -1,6 +1,7 @@
 using Aegis.Core.Deception;
 using Aegis.Core.Events;
 using Aegis.Core.Integrity;
+using Aegis.Core.Patching;
 using Aegis.Core.Policy;
 using Aegis.Core.Vulnerability;
 using Aegis.Data;
@@ -185,5 +186,58 @@ public class DataRepositoryTests : IDisposable
         var remaining = await repo.QueryAsync("host-1");
         Assert.Single(remaining);
         Assert.Equal(recent.EventId, remaining[0].EventId);
+    }
+
+    [Fact]
+    public async Task PatchPlanRepository_RoundTrips_MutatedPlan_IncludingInternalSetterFields()
+    {
+        // PatchRolloutPlan.Stage/CurrentRingIndex/MitigationInPlace have internal setters
+        // (only the orchestrator should mutate a plan) but still need to survive a JSON
+        // round-trip through Aegis.Data, a different assembly - this locks in that
+        // [JsonInclude] actually makes that work, not just that the repository plumbing compiles.
+        var repo = new PatchPlanRepository(_db);
+        var orchestrator = new PatchRolloutOrchestrator();
+        var plan = new PatchRolloutPlan
+        {
+            Component = "OpenSSL 3.0",
+            VendorAdvisoryReference = "CVE-2025-TEST",
+            Rings = new List<RingDefinition>
+            {
+                new() { Name = "canary", TargetHostCount = 1 },
+                new() { Name = "everyone", TargetHostCount = 500 },
+            },
+        };
+        orchestrator.ApplyTemporaryMitigation(plan, "immediate exploitation risk");
+        orchestrator.BeginCanaryTesting(plan, "vendor patch available");
+        orchestrator.RecordCanaryHealthCheck(plan, HealthCheckResult.Healthy());
+        orchestrator.BeginRingDeployment(plan, "canary validated");
+
+        await repo.UpsertAsync(plan);
+        var roundTripped = await repo.GetAsync(plan.PlanId);
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal(PatchRolloutStage.RingDeployment, roundTripped!.Stage);
+        Assert.Equal(0, roundTripped.CurrentRingIndex);
+        Assert.True(roundTripped.MitigationInPlace);
+        Assert.Equal(plan.Component, roundTripped.Component);
+        Assert.Equal(2, roundTripped.Rings.Count);
+        Assert.Equal(4, roundTripped.History.Count);
+    }
+
+    [Fact]
+    public async Task PatchPlanRepository_ListAsync_ReturnsAllStoredPlans()
+    {
+        var repo = new PatchPlanRepository(_db);
+        var planA = new PatchRolloutPlan { Component = "A", VendorAdvisoryReference = "adv-a", Rings = Array.Empty<RingDefinition>() };
+        var planB = new PatchRolloutPlan { Component = "B", VendorAdvisoryReference = "adv-b", Rings = Array.Empty<RingDefinition>() };
+
+        await repo.UpsertAsync(planA);
+        await repo.UpsertAsync(planB);
+
+        var all = await repo.ListAsync();
+
+        Assert.Equal(2, all.Count);
+        Assert.Contains(all, p => p.Component == "A");
+        Assert.Contains(all, p => p.Component == "B");
     }
 }

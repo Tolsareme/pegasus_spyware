@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.2 - patch rollout orchestrator wired end-to-end
+
+- `PatchRolloutOrchestrator` (previously a standalone, tested-but-unwired component) is now
+  driven by `DefenseEngine`, persisted via a new `Aegis.Data.PatchPlanRepository`, exposed
+  over the control pipe (`CreatePatchPlan`/`ApplyPatchMitigation`/`BeginPatchCanaryTesting`/
+  `RecordPatchCanaryHealthCheck`/`BeginPatchRingDeployment`/`RecordPatchRingHealthCheck`/
+  `ClosePatchMitigation`/`RollbackPatchPlan`), and controllable from a new **Patching** tab
+  in the GUI. Still missing: automatic plan creation from a vulnerability finding, and a
+  real automated health-check probe (health checks are an explicit operator judgment call
+  today) - see `docs/ARCHITECTURE.md`.
+- Fixed a real bug found while wiring persistence: `PatchRolloutPlan.History` (a get-only
+  `List<T>` property) silently deserialized to an empty list through `Aegis.Data`'s JSON
+  round-trip when the containing type also has `required` members - the audit trail would
+  have looked empty on every read from storage. Caught by a repository round-trip test
+  before it shipped; fixed by giving `History` an internal setter + `[JsonInclude]`, same as
+  the plan's other orchestrator-only-mutable fields.
+
+Test suite: 101 → 103 tests, all passing.
+
+## v2.1 - decoy materialization + security-review fixes
+
+- Registering a `File`/`Directory`/`Share` decoy now actually creates the artifact on disk
+  (`Aegis.ResponseActions.WindowsDecoyMaterializer`) and best-effort sets a SACL audit rule
+  so touching it fires Security-log event 4663, which `SecurityEventLogCollector` now
+  understands - closing the v1/v2 gap where only the decoy *definition* was registered.
+  `ServiceIdentity`/`HoneyCredential`/`Api` decoys are deliberately not auto-provisioned.
+- Ran the security-review skill against the full codebase and fixed everything actionable
+  without a Windows environment: signed-policy replay (a validly-signed but stale policy
+  could previously be replayed to silently downgrade auto-containment - `SetPolicyAsync` now
+  requires a strictly newer version), netsh/sc.exe argument-injection hardening
+  (`ArgumentEscaping.Quote`), a fail-open/fail-closed contract bug in `AegisPipeServer` (a
+  throwing `identifyCaller` resolver could previously be indistinguishable from "no RBAC
+  configured," which is fully trusted), and a `WhoAmI` correctness bug (it echoed the role
+  string instead of the actual Windows identity).
+
+Test suite: 98 → 101 tests, all passing.
+
 ## v2
 
 Implements the v2 roadmap that was proposed after v1 shipped, in priority order:

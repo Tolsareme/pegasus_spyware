@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Aegis.Core.Patching;
 
 /// <summary>Mirrors doc §18's ten-step safe patch-orchestration workflow one-to-one, minus the two pure research/inventory steps (1-3) which happen before a plan exists.</summary>
@@ -62,8 +64,22 @@ public sealed class PatchRolloutPlan
     public required string VendorAdvisoryReference { get; init; }
     public required IReadOnlyList<RingDefinition> Rings { get; init; }
 
+    // JsonInclude: the setters are internal (only the orchestrator should mutate a plan) but
+    // Aegis.Data (a different assembly) still needs to round-trip these fields through JSON
+    // for persistence - JsonInclude lets System.Text.Json use the internal setter via
+    // reflection without widening it to public for ordinary C# callers.
+    [JsonInclude]
     public PatchRolloutStage Stage { get; internal set; } = PatchRolloutStage.Assessed;
+    [JsonInclude]
     public int CurrentRingIndex { get; internal set; } = -1;
+    [JsonInclude]
     public bool MitigationInPlace { get; internal set; }
-    public List<PatchRolloutHistoryEntry> History { get; } = new();
+    // A plain get-only collection property does not reliably round-trip through
+    // System.Text.Json when the containing type also has `required` members (observed
+    // empirically - the "populate existing collection instance" fallback does not kick in on
+    // that code path), so this needs an actual (internal) setter + JsonInclude like the other
+    // orchestrator-only-mutable fields above, even though normal orchestrator code only ever
+    // calls .Add() through the getter and never assigns a new list itself.
+    [JsonInclude]
+    public List<PatchRolloutHistoryEntry> History { get; internal set; } = new();
 }

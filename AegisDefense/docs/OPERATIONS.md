@@ -267,6 +267,37 @@ need longer raw-event retention for compliance, forward events to your SIEM (see
 though note SIEM export today only forwards *alerts*, not raw events) or back up `aegis.db`
 before the retention window elapses.
 
+## v2.2: Using the Patching tab (ringed rollout)
+
+The console's **Patching** tab drives `PatchRolloutOrchestrator` (doc §18's ten-step
+workflow) for a single vendor patch/component at a time:
+
+1. **Create a plan** — enter the component name, the vendor advisory reference, and the
+   deployment rings as `name:count,name:count` (e.g. `canary:1,broad:50,everyone:2000`).
+   The plan starts at stage **Assessed**.
+2. **Apply Mitigation** (optional, step 4) — record that a temporary mitigation is in place
+   while the real fix is prepared. Skip this if there's no immediate exploitation risk.
+3. **Begin Canary Testing** (steps 5-6) — moves the plan to `CanaryTesting`.
+4. **Health Check: Healthy / Unhealthy** — record the canary's health check result. Healthy
+   advances to `CanaryValidated`; Unhealthy rolls the whole plan back immediately (the
+   update never reaches a single real ring host). **There is no automated health probe
+   wired up yet** - this is an explicit operator judgment call today, recorded through the
+   same guarded state machine a real monitoring integration would eventually drive (see
+   `docs/ARCHITECTURE.md`).
+5. **Begin Ring Deployment** (steps 7-9) — starts progressive rollout at the first ring.
+6. **Health Check: Healthy / Unhealthy** (repeat per ring) — Healthy advances to the next
+   ring, or to `Verified` after the last ring; Unhealthy rolls the whole plan back.
+7. **Close Mitigation** (step 10) — once `Verified`, closes any temporary mitigation applied
+   in step 2. Safe to click even if no mitigation was ever applied (recorded as a no-op).
+8. **Rollback** is available from any stage before `Verified`/`MitigationClosed` if you need
+   to abandon a plan outside the normal health-check-triggered path.
+
+Every transition is guarded server-side (`Aegis.Service.DefenseEngine` /
+`Aegis.Core.Patching.PatchRolloutOrchestrator`) - calling an action from the wrong stage is
+rejected with an explanatory error rather than corrupting the plan, and the full history
+(who/what/when/why for every transition) is visible in the tab's History panel and persisted
+in `aegis.db`.
+
 ## v2: Building and using the MSI installer
 
 `installer/` contains a WiX v5 project (`AegisDefense.Installer.wixproj`) that packages the

@@ -344,6 +344,69 @@
                 </DataGrid>
             </TabItem>
 
+            <!-- ===================== PATCHING (v2, doc §18 ringed rollout) ===================== -->
+            <TabItem Header="Patching">
+                <DockPanel Margin="8">
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8" IsEnabled="{Binding IsAdministrator}">
+                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,6"
+                                   Text="Guarded ringed rollout for a vendor patch (doc §18). There is no automated health-check integration yet - 'Healthy'/'Unhealthy' below is an explicit operator judgment call recorded through the same state machine a real monitoring integration would eventually drive. See docs/ARCHITECTURE.md."/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Component:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <TextBox Width="160" Text="{Binding NewPatchComponent, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Text="Advisory ref:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <TextBox Width="140" Text="{Binding NewPatchAdvisoryReference, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Text="Rings (name:count,...):" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <TextBox Width="200" Text="{Binding NewPatchRingsCsv, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <Button Content="Create Plan" Command="{Binding CreatePatchPlanCommand}"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,8" IsEnabled="{Binding IsAdministrator}">
+                        <Button Content="Apply Mitigation" Command="{Binding ApplyPatchMitigationCommand}" ToolTip="Step 4: record a temporary mitigation while the real fix is prepared."/>
+                        <Button Content="Begin Canary Testing" Command="{Binding BeginPatchCanaryTestingCommand}" ToolTip="Steps 5-6: begin testing the update against a canary/representative system."/>
+                        <Button Content="Health Check: Healthy" Command="{Binding RecordHealthyHealthCheckCommand}"/>
+                        <Button Content="Health Check: Unhealthy" Command="{Binding RecordUnhealthyHealthCheckCommand}" Foreground="{StaticResource CritBrush}"/>
+                        <Button Content="Begin Ring Deployment" Command="{Binding BeginPatchRingDeploymentCommand}" ToolTip="Steps 7-9: begin progressive rollout across the defined rings."/>
+                        <Button Content="Close Mitigation" Command="{Binding ClosePatchMitigationCommand}" ToolTip="Step 10: close the temporary mitigation now that the update is verified everywhere."/>
+                        <Button Content="Rollback" Command="{Binding RollbackPatchPlanCommand}" Foreground="{StaticResource CritBrush}"/>
+                    </StackPanel>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="320"/>
+                        </Grid.ColumnDefinitions>
+
+                        <DataGrid Grid.Column="0" ItemsSource="{Binding PatchPlans}" SelectedItem="{Binding SelectedPatchPlan}" Margin="0,0,8,0">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Component" Binding="{Binding Component}" Width="150"/>
+                                <DataGridTextColumn Header="Advisory" Binding="{Binding VendorAdvisoryReference}" Width="120"/>
+                                <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="120"/>
+                                <DataGridTextColumn Header="Mitigation In Place" Binding="{Binding MitigationInPlace}" Width="110"/>
+                                <DataGridTextColumn Header="Current Ring" Binding="{Binding CurrentRingIndex}" Width="90"/>
+                                <DataGridTextColumn Header="Plan Id" Binding="{Binding PlanId}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <GroupBox Grid.Column="1" Header="History (selected plan)">
+                            <ListBox ItemsSource="{Binding SelectedPatchPlan.History}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,2">
+                                            <Run Text="{Binding At}" Foreground="{StaticResource MutedTextBrush}"/>
+                                            <LineBreak/>
+                                            <Run Text="{Binding From}"/><Run Text=" -&gt; "/><Run Text="{Binding To}" FontWeight="Bold"/>
+                                            <LineBreak/>
+                                            <Run Text="{Binding Reason}"/>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </GroupBox>
+                    </Grid>
+                </DockPanel>
+            </TabItem>
+
             <!-- ===================== APPROVALS ===================== -->
             <TabItem Header="Approvals">
                 <DockPanel Margin="8">

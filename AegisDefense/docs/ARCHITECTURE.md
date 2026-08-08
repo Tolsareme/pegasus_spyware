@@ -190,8 +190,13 @@ gate, exactly as in v1.
   forwarder without touching `DefenseEngine`'s alert pipeline.
 - **`IFleetClient`** (v2) — swap `HttpFleetClient` for a different transport (gRPC, a
   message bus) to the Fleet Hub, or a different central aggregator entirely.
-- **`PatchRolloutOrchestrator`** (v2) — the state machine is implemented and fully tested,
-  but nothing calls it yet end-to-end; see "Not yet implemented" below for the wiring gap.
+- **`PatchRolloutOrchestrator`** (v2) — the state machine is implemented, fully tested, and
+  (v2.2) wired end-to-end through `DefenseEngine`/`Aegis.Data`/the control pipe/the GUI's
+  Patching tab; see "Not yet implemented" below for what's still missing (a real patch
+  executor, and automated health checks).
+- **`IDecoyMaterializer`** (v2.1) — swap `WindowsDecoyMaterializer` for a different
+  provisioning backend (e.g. one that also stands up honeytoken accounts through a real
+  identity workflow) without touching `DefenseEngine`'s decoy registration path.
 
 ## Not yet implemented
 
@@ -201,13 +206,18 @@ Being explicit about this matters more than pretending otherwise:
   and the v2 online statistical anomaly model are both real and running; a *trained*
   offline model is still just a seam (`IAnomalyModel`, `mlAnomalyScore`), not a shipped
   model, because that requires a labeled fleet dataset this repo doesn't have.
-- **`PatchRolloutOrchestrator` is not wired into `DefenseEngine`/the GUI/persistence.**
-  The state machine (doc §18's ten-step workflow, ring-by-ring health-check gating,
-  automatic rollback on failure) is implemented and has a thorough test suite, but nothing
-  creates a `PatchRolloutPlan` from a real vulnerability finding yet, there's no
-  `Aegis.Data` table for plans, no IPC exposure, and no actual Windows Update Agent
-  integration to execute what the orchestrator decides — it's ready to be driven, not yet
-  driven.
+- **`PatchRolloutOrchestrator` has no real patch executor or automated health checks behind
+  it.** The state machine (doc §18's ten-step workflow, ring-by-ring health-check gating,
+  automatic rollback on failure) is now wired end-to-end - `DefenseEngine` persists plans to
+  `Aegis.Data` (`PatchPlanRepository`), exposes every transition over the control pipe
+  (`CreatePatchPlan`/`ApplyPatchMitigation`/.../`RollbackPatchPlan`), and the GUI's
+  **Patching** tab drives it - but two real integrations are still missing: (1) nothing
+  automatically creates a `PatchRolloutPlan` from a `VulnerabilityPriority` finding yet, an
+  operator creates one by hand; (2) `RecordCanaryHealthCheck`/`RecordRingHealthCheck` take
+  whatever `HealthCheckResult` the caller supplies - today that's an operator's own
+  Healthy/Unhealthy judgment call from the GUI, not a real automated
+  application/service/boot/auth/network probe. Both are natural next increments once a real
+  Windows Update Agent / WSUS / SCCM integration is in scope.
 - **Fleet Hub uses a shared API key, not mutual TLS.** Fine for a first deployment behind
   a private network; a Hub reachable across an untrusted network should sit behind mTLS or
   a reverse proxy that terminates it — the shared-secret model doesn't rotate or scope per
@@ -216,9 +226,11 @@ Being explicit about this matters more than pretending otherwise:
   local named pipe; it does not (yet) also query `Aegis.FleetHub` directly to show a
   multi-host dashboard. The Hub's `/api/v1/fleet/status` endpoint already returns what such
   a view would need.
-- **Decoy artifacts aren't auto-provisioned.** The GUI/service can *register* a
-  `DecoyResourceDefinition` (so access to that location gets reclassified as a canary hit),
-  but creating the actual file/share/identity on disk is still a manual operational step.
+- **`ServiceIdentity`/`HoneyCredential`/`Api` decoys aren't auto-provisioned** (v2.1's
+  `WindowsDecoyMaterializer` handles `File`/`Directory`/`Share` decoys automatically; those
+  three types would each mean creating a real Windows service, a real account, or standing
+  up a real endpoint - a deliberate operator action, not an automated one). Register the
+  definition and provision the artifact by hand for those types.
 - **Evaluation harness (WP10) / experimental metrics (doc §22)** — these require an
   isolated attack-range and labeled dataset program, out of scope for a code deliverable.
 - **The WiX installer (`installer/`) could not be verified at all in this environment** —

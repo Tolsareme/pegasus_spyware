@@ -2,6 +2,7 @@ using Aegis.Core.Deception;
 using Aegis.Core.Estimation;
 using Aegis.Core.Events;
 using Aegis.Core.Graph;
+using Aegis.Core.Patching;
 using Aegis.Core.Policy;
 using Aegis.Core.Vulnerability;
 
@@ -32,6 +33,15 @@ public static class MessageTypes
     public const string VerifyEventChain = "VerifyEventChain";
     public const string WhoAmI = "WhoAmI";
     public const string GetHostInventory = "GetHostInventory";
+    public const string ListPatchPlans = "ListPatchPlans";
+    public const string CreatePatchPlan = "CreatePatchPlan";
+    public const string ApplyPatchMitigation = "ApplyPatchMitigation";
+    public const string BeginPatchCanaryTesting = "BeginPatchCanaryTesting";
+    public const string RecordPatchCanaryHealthCheck = "RecordPatchCanaryHealthCheck";
+    public const string BeginPatchRingDeployment = "BeginPatchRingDeployment";
+    public const string RecordPatchRingHealthCheck = "RecordPatchRingHealthCheck";
+    public const string ClosePatchMitigation = "ClosePatchMitigation";
+    public const string RollbackPatchPlan = "RollbackPatchPlan";
 }
 
 public sealed record GetAlertsRequest(string? HostId, AlertStatus? StatusFilter, int Take = 200);
@@ -107,3 +117,21 @@ public sealed record WhoAmIResponse(OperatorRole Role, string? WindowsIdentity);
 public sealed record HostInventoryEntry(string HostId, DateTimeOffset LastSeen, int EventCount24h, string? CurrentAttackState, int OpenAlertCount);
 public sealed record GetHostInventoryRequest;
 public sealed record GetHostInventoryResponse(IReadOnlyList<HostInventoryEntry> Hosts);
+
+/// <summary>Wraps the outcome of any single patch-plan orchestration call - a rejected
+/// transition (e.g. "wrong stage") is reported via Error/Plan (the plan unchanged), never an
+/// exception over the wire.</summary>
+public sealed record PatchPlanActionResponse(bool Success, string? Error, PatchRolloutPlan? Plan);
+
+public sealed record ListPatchPlansRequest;
+public sealed record ListPatchPlansResponse(IReadOnlyList<PatchRolloutPlan> Plans);
+
+public sealed record CreatePatchPlanRequest(string Component, string VendorAdvisoryReference, IReadOnlyList<RingDefinition> Rings);
+
+public sealed record ApplyPatchMitigationRequest(Guid PlanId, string Reason);
+public sealed record BeginPatchCanaryTestingRequest(Guid PlanId, string Reason);
+public sealed record RecordPatchCanaryHealthCheckRequest(Guid PlanId, HealthCheckResult Result);
+public sealed record BeginPatchRingDeploymentRequest(Guid PlanId, string Reason);
+public sealed record RecordPatchRingHealthCheckRequest(Guid PlanId, HealthCheckResult Result);
+public sealed record ClosePatchMitigationRequest(Guid PlanId, string Reason);
+public sealed record RollbackPatchPlanRequest(Guid PlanId, string Reason);
