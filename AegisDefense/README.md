@@ -30,7 +30,11 @@ operator-controlled policy (see [§14/§29 of the design doc](docs/Autonomous_AI
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design, how it maps to
 the research document, and why each technology was chosen. See
-**[docs/OPERATIONS.md](docs/OPERATIONS.md)** for build/install/provisioning steps.
+**[docs/OPERATIONS.md](docs/OPERATIONS.md)** for build/install/provisioning steps, and
+**[docs/WINDOWS_VALIDATION_CHECKLIST.md](docs/WINDOWS_VALIDATION_CHECKLIST.md)** for the
+concrete checklist of what still needs to be verified on a real Windows host - this was
+developed and tested in a Linux sandbox (compiler + portable test suite only), so nothing
+Windows-only has run yet.
 
 ## Quick start (development)
 
