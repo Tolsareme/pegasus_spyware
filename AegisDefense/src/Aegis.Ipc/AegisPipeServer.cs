@@ -85,9 +85,6 @@ public sealed class AegisPipeServer : IAsyncDisposable
         {
             try
             {
-                // Resolved once per connection, not per message - the caller's identity/role
-                // can't change mid-connection, and impersonation (what a real resolver does
-                // under the hood) is comparatively expensive to redo for every request.
                 // null is not a safe "untrusted" sentinel here: null caller context means "no
                 // identifyCaller resolver is configured at all", which Aegis.Service.IpcRequestHandler
                 // treats as pre-RBAC/fully-trusted (see class doc above). If a *configured* resolver
@@ -96,11 +93,7 @@ public sealed class AegisPipeServer : IAsyncDisposable
                 // explicit sentinel that can never parse as a valid role instead.
                 const string ResolverFailedSentinel = "Unknown";
                 string? callerContext = null;
-                if (_identifyCaller is not null)
-                {
-                    try { callerContext = _identifyCaller(pipe); }
-                    catch { callerContext = ResolverFailedSentinel; }
-                }
+                var callerResolved = false;
 
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
@@ -110,6 +103,24 @@ public sealed class AegisPipeServer : IAsyncDisposable
                     var line = await reader.ReadLineAsync().ConfigureAwait(false);
                     if (line is null) break;
                     if (line.Length == 0) continue;
+
+                    // Resolved once per connection, not per message - the caller's identity/role
+                    // can't change mid-connection, and impersonation (what a real resolver does
+                    // under the hood) is comparatively expensive to redo for every request. This
+                    // must happen *after* the first read, not before: Win32's
+                    // ImpersonateNamedPipeClient (which RunAsClient wraps) throws "Unable to
+                    // impersonate using a named pipe until data has been read from that pipe" if
+                    // called before any message has actually been read from the connection -
+                    // confirmed against a real failure on Windows, not just documentation.
+                    if (!callerResolved)
+                    {
+                        if (_identifyCaller is not null)
+                        {
+                            try { callerContext = _identifyCaller(pipe); }
+                            catch { callerContext = ResolverFailedSentinel; }
+                        }
+                        callerResolved = true;
+                    }
 
                     IpcEnvelope response;
                     IpcEnvelope request;
