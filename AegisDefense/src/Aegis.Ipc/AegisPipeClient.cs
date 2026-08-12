@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.Principal;
 using System.Text;
 
 namespace Aegis.Ipc;
@@ -23,7 +24,15 @@ public sealed class AegisPipeClient : IAsyncDisposable
 
     public async Task ConnectAsync(CancellationToken ct = default)
     {
-        var pipe = new NamedPipeClientStream(_serverName, _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        // TokenImpersonationLevel.Impersonation is required, not optional: every
+        // NamedPipeClientStream constructor that omits this parameter defaults to
+        // TokenImpersonationLevel.None, which denies the server the right to impersonate
+        // this client at all. Aegis.Service.WindowsCallerRoleResolver depends on
+        // NamedPipeServerStream.RunAsClient succeeding to resolve the caller's role (v2
+        // RBAC) - without this explicit level, RunAsClient fails, the resolver catches it
+        // and falls back to Unknown, and every request gets refused with "Caller could not
+        // be mapped to an authorized role" even for a fully elevated Administrator.
+        var pipe = new NamedPipeClientStream(_serverName, _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(PipeConstants.ConnectTimeout);
         await pipe.ConnectAsync(timeoutCts.Token).ConfigureAwait(false);
