@@ -16,6 +16,18 @@
     <AssemblyName>AegisDefenseService</AssemblyName>
     <OutputType>Exe</OutputType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!--
+      Explicit x64 (not AnyCPU) is required for Microsoft.Data.Sqlite's native dependency
+      (SQLitePCLRaw/e_sqlite3.dll) to resolve correctly on classic .NET Framework: unlike
+      .NET Core/8, net48 has no runtime RID-based native-asset probing, so SQLitePCLRaw's
+      own build-time .targets file needs PlatformTarget to be unambiguous to copy the right
+      native binary next to the exe. Left as AnyCPU, this throws "Library e_sqlite3 not
+      found" / "%1 is not a valid Win32 application" at first DB open - confirmed against a
+      real Windows run, not theoretical. x64 matches every other Windows target in this repo
+      (installer/build-installer.ps1 publishes -r win-x64); 32-bit-only hosts are out of
+      scope (Windows Server has been x64-only since 2008 R2).
+    -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
