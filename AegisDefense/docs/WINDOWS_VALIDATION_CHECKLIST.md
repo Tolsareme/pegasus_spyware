@@ -108,9 +108,26 @@ source of truth for "have we actually run this yet."
       second bug that would have silently undermined the fix even without the race:
       `AlertRepository.UpsertAsync`'s `ON CONFLICT` clause omitted
       `evidence_event_ids_json`/`evidence_summary_json`/`estimated_state`, so a coalesced
-      alert's merged evidence would never have actually persisted to disk. **Still needs a
-      third live retest** to confirm the race fix actually holds under real concurrent load -
-      not yet confirmed clean, only confirmed to compile/pass the portable suite.
+      alert's merged evidence would never have actually persisted to disk.
+
+      **Retested again and the flood was STILL there** - a fourth round, and this time the
+      actual root cause: `PowerShellScriptBlockCollector`/`SecurityEventLogCollector` derive
+      `NormalizedEvent.Timestamp` from `EventRecord.TimeCreated`, a *local-time* `DateTime`,
+      without normalizing to UTC - on this UTC+3 test host that baked a `+03:00` offset into
+      those two collectors' events while every other collector correctly used
+      `DateTimeOffset.UtcNow` (`+00:00`). `FindRecentOpenAlertAsync` compares timestamps as
+      plain ISO-8601 text (`created_at >= $since`), which only sorts correctly when every value
+      shares the same offset - a `+03:00`-offset cutoff has a numerically larger wall-clock hour
+      than a same-instant `+00:00` value, so the lookup silently matched nothing whenever the
+      triggering event came from one of those two collectors, which is exactly what an encoded-
+      PowerShell test drives (`ScriptExecution` events). Fixed at the source (both collectors
+      now call `.ToUniversalTime()`) and defensively at the comparison site
+      (`FindRecentOpenAlertAsync` normalizes `asOf` too). New regression test exercises the
+      exact mixed-offset scenario - every earlier test had used `UtcNow` consistently on both
+      sides and never would have caught this. **Still needs a fourth live retest** to confirm
+      clean - not yet confirmed, only confirmed to compile/pass the portable suite (whose tests
+      run on a machine with a different local offset than the failure, incidentally - another
+      reminder that portable-suite-green and Windows-verified are not the same claim).
 
       This multi-round discovery is exactly the class of bug only real, sustained live traffic
       (not a unit test firing one or two synthetic events) surfaces - worth deliberately
