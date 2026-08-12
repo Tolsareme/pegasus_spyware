@@ -120,7 +120,13 @@ ORDER BY created_at DESC
 LIMIT 1;";
         cmd.Parameters.AddWithValue("$host_id", hostId);
         cmd.Parameters.AddWithValue("$source", source);
-        cmd.Parameters.AddWithValue("$since", (asOf - within).ToString("O"));
+        // created_at is stored via DateTimeOffset.UtcNow (see UpsertAsync/Alert.CreatedAt's
+        // default) and compared here as a plain TEXT column - ISO-8601 "O"-format strings only
+        // sort correctly against each other when every value shares the same UTC offset. asOf
+        // is normalized here too, defensively, in case some future caller passes a timestamp
+        // that wasn't itself normalized upstream (this exact mismatch was a real, confirmed bug
+        // - see the timestamp-normalization fixes in Aegis.Sensor's collectors).
+        cmd.Parameters.AddWithValue("$since", (asOf - within).ToUniversalTime().ToString("O"));
 
         using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadAlert(reader) : null;

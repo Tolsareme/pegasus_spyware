@@ -137,7 +137,10 @@ public sealed class SecurityEventLogCollector : ITelemetryCollector
     private NormalizedEvent Base(EventRecord record, ActionType actionType, ObjectType objectType, string? objectId, ActionResult result = ActionResult.Success) => new()
     {
         EventId = Guid.NewGuid(),
-        Timestamp = record.TimeCreated.HasValue ? new DateTimeOffset(record.TimeCreated.Value) : DateTimeOffset.UtcNow,
+        // See the identical comment in PowerShellScriptBlockCollector - EventRecord.TimeCreated
+        // is local time; normalize to UTC so this collector's events compare correctly against
+        // every other collector's DateTimeOffset.UtcNow-based timestamps.
+        Timestamp = record.TimeCreated.HasValue ? new DateTimeOffset(record.TimeCreated.Value).ToUniversalTime() : DateTimeOffset.UtcNow,
         HostId = _hostId,
         HostRole = _hostRole,
         UserId = objectType == ObjectType.UserAccount ? objectId : null,

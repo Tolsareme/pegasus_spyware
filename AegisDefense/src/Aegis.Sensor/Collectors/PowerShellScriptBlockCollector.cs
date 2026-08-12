@@ -46,7 +46,15 @@ public sealed class PowerShellScriptBlockCollector : ITelemetryCollector
                         onEvent(new NormalizedEvent
                         {
                             EventId = Guid.NewGuid(),
-                            Timestamp = e.EventRecord.TimeCreated.HasValue ? new DateTimeOffset(e.EventRecord.TimeCreated.Value) : DateTimeOffset.UtcNow,
+                            // EventRecord.TimeCreated is a local-time DateTime - wrapping it directly in
+                            // DateTimeOffset bakes in the machine's local UTC offset (e.g. +03:00), while
+                            // every other collector uses DateTimeOffset.UtcNow (+00:00). That mismatch is
+                            // invisible until something compares/sorts timestamps across collectors - which
+                            // DefenseEngine's alert-coalescing lookup does, and it broke on exactly this
+                            // (confirmed via live Windows testing: the lookup silently never matched for
+                            // events sourced from this collector). Normalize to UTC here instead of trusting
+                            // every downstream consumer to remember to do it.
+                            Timestamp = e.EventRecord.TimeCreated.HasValue ? new DateTimeOffset(e.EventRecord.TimeCreated.Value).ToUniversalTime() : DateTimeOffset.UtcNow,
                             HostId = _hostId,
                             HostRole = _hostRole,
                             ProcessId = (int?)e.EventRecord.ProcessId,

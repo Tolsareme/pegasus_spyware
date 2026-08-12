@@ -109,6 +109,29 @@ public class DataRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task AlertRepository_FindRecentOpenAlert_MatchesAcrossMixedTimezoneOffsets()
+    {
+        // Regression test for a real bug: alerts are stored via DateTimeOffset.UtcNow
+        // (offset +00:00), but two collectors (PowerShellScriptBlock, SecurityEventLog) used
+        // to derive NormalizedEvent.Timestamp from EventRecord.TimeCreated without normalizing
+        // it to UTC first, so on a host with a non-zero local UTC offset those events' evt.Timestamp
+        // (e.g. +03:00) would fail to match against alerts' UTC-stamped created_at under plain
+        // ISO-8601 string comparison, even for events genuinely seconds apart - confirmed on
+        // real Windows hardware (UTC+3), not theoretical. This test passes an `asOf` in a
+        // non-UTC offset to lock in that the lookup still matches correctly regardless.
+        var repo = new AlertRepository(_db);
+        var now = DateTimeOffset.UtcNow;
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001", CreatedAt = now };
+        await repo.UpsertAsync(alert);
+
+        var asOfInLocalOffset = now.AddMinutes(1).ToOffset(TimeSpan.FromHours(3));
+        var found = await repo.FindRecentOpenAlertAsync("host-1", "AEG-001", TimeSpan.FromMinutes(5), asOfInLocalOffset);
+
+        Assert.NotNull(found);
+        Assert.Equal(alert.AlertId, found!.AlertId);
+    }
+
+    [Fact]
     public async Task AlertRepository_FindRecentOpenAlert_IgnoresResolvedAlerts()
     {
         var repo = new AlertRepository(_db);
