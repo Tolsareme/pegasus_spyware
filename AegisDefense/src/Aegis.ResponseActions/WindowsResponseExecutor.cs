@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.ServiceProcess;
+using System.Text.Json;
 using Aegis.Core.Diagnostics;
+using Aegis.Core.Events;
 using Aegis.Core.Response;
+using Microsoft.Win32;
 
 namespace Aegis.ResponseActions;
 
@@ -207,6 +210,240 @@ public sealed class WindowsResponseExecutor : IResponseExecutor
     {
         if (!Matches(hostId)) return HostMismatch(hostId, nameof(RestoreCredentialAsync));
         return await _credentialRevoker.RestoreAsync(identity, ct).ConfigureAwait(false);
+    }
+
+    public Task<ResponseActionResult> QuarantineFileAsync(string hostId, string filePath, CancellationToken ct = default)
+    {
+        if (!Matches(hostId)) return Task.FromResult(HostMismatch(hostId, nameof(QuarantineFileAsync)));
+
+        try
+        {
+            if (!File.Exists(filePath))
+                return Task.FromResult(new ResponseActionResult { Success = false, Detail = $"File not found: '{filePath}' (already gone, or a stale/bad path).", Reversible = true });
+
+            var quarantineRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AegisDefense", "quarantine");
+            Directory.CreateDirectory(quarantineRoot);
+
+            var quarantinedPath = Path.Combine(quarantineRoot, Guid.NewGuid().ToString("N") + ".quarantined");
+            File.Move(filePath, quarantinedPath);
+            File.WriteAllText(quarantinedPath + ".meta.json", JsonSerializer.Serialize(new QuarantineMetadata(filePath, DateTimeOffset.UtcNow)));
+
+            // Conservative lockdown: mark read-only rather than rewriting ACLs - keeps this
+            // action simple and safe to reverse, at the cost of not being bulletproof against
+            // an attacker with write access to the quarantine folder itself (LocalSystem-only
+            // by default, matching every other Aegis state directory under %ProgramData%).
+            try { File.SetAttributes(quarantinedPath, File.GetAttributes(quarantinedPath) | FileAttributes.ReadOnly); } catch { /* best-effort */ }
+
+            var detail = $"Quarantined '{filePath}'.";
+            _logger.LogAudit(nameof(WindowsResponseExecutor), "QuarantineFile", hostId, "Success", detail);
+            return Task.FromResult(new ResponseActionResult { Success = true, Detail = detail, Reversible = true, RollbackToken = quarantinedPath });
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(nameof(WindowsResponseExecutor), $"QuarantineFile failed for '{filePath}'", ex);
+            return Task.FromResult(new ResponseActionResult { Success = false, Detail = ex.Message, Reversible = true });
+        }
+    }
+
+    public Task<ResponseActionResult> RestoreQuarantinedFileAsync(string hostId, string quarantineToken, CancellationToken ct = default)
+    {
+        if (!Matches(hostId)) return Task.FromResult(HostMismatch(hostId, nameof(RestoreQuarantinedFileAsync)));
+
+        try
+        {
+            var metaPath = quarantineToken + ".meta.json";
+            if (!File.Exists(quarantineToken) || !File.Exists(metaPath))
+                return Task.FromResult(new ResponseActionResult { Success = false, Detail = $"No quarantined file/metadata found for token '{quarantineToken}'.", Reversible = false });
+
+            var meta = JsonSerializer.Deserialize<QuarantineMetadata>(File.ReadAllText(metaPath))!;
+            var destDir = Path.GetDirectoryName(meta.OriginalPath);
+            if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
+
+            try { File.SetAttributes(quarantineToken, File.GetAttributes(quarantineToken) & ~FileAttributes.ReadOnly); } catch { /* best-effort */ }
+            File.Move(quarantineToken, meta.OriginalPath);
+            File.Delete(metaPath);
+
+            var detail = $"Restored quarantined file to '{meta.OriginalPath}'.";
+            _logger.LogAudit(nameof(WindowsResponseExecutor), "RestoreQuarantinedFile", hostId, "Success", detail);
+            return Task.FromResult(new ResponseActionResult { Success = true, Detail = detail, Reversible = false });
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(nameof(WindowsResponseExecutor), $"RestoreQuarantinedFile failed for token '{quarantineToken}'", ex);
+            return Task.FromResult(new ResponseActionResult { Success = false, Detail = ex.Message, Reversible = false });
+        }
+    }
+
+    public async Task<ResponseActionResult> RemovePersistenceArtifactAsync(string hostId, PersistenceArtifactRef artifact, CancellationToken ct = default)
+    {
+        if (!Matches(hostId)) return HostMismatch(hostId, nameof(RemovePersistenceArtifactAsync));
+
+        try
+        {
+            return artifact.Kind switch
+            {
+                ActionType.ServiceCreate or ActionType.ServiceChange => await DisablePersistenceServiceAsync(hostId, artifact.Identifier, ct).ConfigureAwait(false),
+                ActionType.ScheduledTaskCreate or ActionType.ScheduledTaskChange => await DisablePersistenceScheduledTaskAsync(hostId, artifact.Identifier, ct).ConfigureAwait(false),
+                ActionType.RegistrySet => DisablePersistenceRegistryValue(hostId, artifact.Identifier),
+                _ => new ResponseActionResult { Success = false, Detail = $"'{artifact.Kind}' is not a removable persistence artifact type.", Reversible = true },
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(nameof(WindowsResponseExecutor), $"RemovePersistenceArtifact failed for {artifact.Kind}:{artifact.Identifier}", ex);
+            return new ResponseActionResult { Success = false, Detail = ex.Message, Reversible = true };
+        }
+    }
+
+    public async Task<ResponseActionResult> RestorePersistenceArtifactAsync(string hostId, string restoreToken, CancellationToken ct = default)
+    {
+        if (!Matches(hostId)) return HostMismatch(hostId, nameof(RestorePersistenceArtifactAsync));
+
+        try
+        {
+            if (restoreToken.StartsWith("schtask:", StringComparison.Ordinal))
+            {
+                var taskPath = restoreToken.Substring("schtask:".Length);
+                var result = await ProcessRunner.RunAsync("schtasks.exe", $"/Change /TN {Q(taskPath)} /ENABLE", ct: ct).ConfigureAwait(false);
+                var detail = result.Succeeded ? $"Re-enabled scheduled task '{taskPath}'." : $"Failed to re-enable scheduled task '{taskPath}': {result.StdErr}";
+                _logger.LogAudit(nameof(WindowsResponseExecutor), "RestorePersistenceArtifact", hostId, result.Succeeded ? "Success" : "Failure", detail);
+                return new ResponseActionResult { Success = result.Succeeded, Detail = detail, Reversible = false };
+            }
+
+            if (restoreToken.StartsWith("service-backup:", StringComparison.Ordinal))
+                return await RestoreServiceStartType(hostId, restoreToken.Substring("service-backup:".Length)).ConfigureAwait(false);
+
+            if (restoreToken.StartsWith("registry-backup:", StringComparison.Ordinal))
+                return RestoreRegistryValue(hostId, restoreToken.Substring("registry-backup:".Length));
+
+            return new ResponseActionResult { Success = false, Detail = $"Unrecognized restore token format: '{restoreToken}'.", Reversible = false };
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(nameof(WindowsResponseExecutor), $"RestorePersistenceArtifact failed for token '{restoreToken}'", ex);
+            return new ResponseActionResult { Success = false, Detail = ex.Message, Reversible = false };
+        }
+    }
+
+    private async Task<ResponseActionResult> DisablePersistenceServiceAsync(string hostId, string serviceName, CancellationToken ct)
+    {
+        var originalStartType = TryReadServiceStartType(serviceName) ?? 3; // 3 = Manual, a safe fallback if the pre-disable read itself fails
+        var result = await DisableServiceAsync(hostId, serviceName, ct).ConfigureAwait(false);
+        if (!result.Success) return result;
+
+        var backupPath = WriteRemediationBackup("service-backup", new ServiceStartTypeBackup(serviceName, originalStartType));
+        return result with { RollbackToken = "service-backup:" + backupPath };
+    }
+
+    private async Task<ResponseActionResult> RestoreServiceStartType(string hostId, string backupPath)
+    {
+        if (!File.Exists(backupPath))
+            return new ResponseActionResult { Success = false, Detail = $"No service start-type backup found at '{backupPath}'.", Reversible = false };
+
+        var backup = JsonSerializer.Deserialize<ServiceStartTypeBackup>(File.ReadAllText(backupPath))!;
+        var startArg = backup.StartType switch { 2 => "auto", 4 => "disabled", _ => "demand" };
+
+        var configResult = await ProcessRunner.RunAsync("sc.exe", $"config {Q(backup.ServiceName)} start= {startArg}").ConfigureAwait(false);
+        var detail = configResult.Succeeded ? $"Restored service '{backup.ServiceName}' start type." : $"Failed to restore service '{backup.ServiceName}': {configResult.StdErr}";
+        _logger.LogAudit(nameof(WindowsResponseExecutor), "RestorePersistenceArtifact", hostId, configResult.Succeeded ? "Success" : "Failure", detail);
+        if (configResult.Succeeded) File.Delete(backupPath);
+        return new ResponseActionResult { Success = configResult.Succeeded, Detail = detail, Reversible = false };
+    }
+
+    private async Task<ResponseActionResult> DisablePersistenceScheduledTaskAsync(string hostId, string taskPath, CancellationToken ct)
+    {
+        var result = await ProcessRunner.RunAsync("schtasks.exe", $"/Change /TN {Q(taskPath)} /DISABLE", ct: ct).ConfigureAwait(false);
+        var detail = result.Succeeded ? $"Disabled scheduled task '{taskPath}'." : $"Failed to disable scheduled task '{taskPath}': {result.StdErr}";
+        _logger.LogAudit(nameof(WindowsResponseExecutor), "RemovePersistenceArtifact", hostId, result.Succeeded ? "Success" : "Failure", detail);
+        return new ResponseActionResult { Success = result.Succeeded, Detail = detail, Reversible = true, RollbackToken = "schtask:" + taskPath };
+    }
+
+    /// <summary>Deletes (after backing up) a persistence-registry value - see
+    /// <see cref="RegistryValueBackup"/> for the string round-trip caveat on non-REG_SZ kinds.</summary>
+    private ResponseActionResult DisablePersistenceRegistryValue(string hostId, string identifier)
+    {
+        if (!TryParseRegistryIdentifier(identifier, out var hive, out var path, out var valueName))
+            return new ResponseActionResult { Success = false, Detail = $"Could not parse registry artifact identifier '{identifier}' (expected '{{Hive}}\\{{Path}}\\{{ValueName}}').", Reversible = true };
+
+        using var baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Default);
+        using var key = baseKey.OpenSubKey(path, writable: true);
+        if (key is null)
+            return new ResponseActionResult { Success = false, Detail = $"Registry key '{hive}\\{path}' not found - already removed?", Reversible = true };
+
+        var currentValue = key.GetValue(valueName);
+        if (currentValue is null)
+            return new ResponseActionResult { Success = true, Detail = $"Registry value '{identifier}' already absent - nothing to remove.", Reversible = true };
+
+        var valueKind = key.GetValueKind(valueName);
+        var backupPath = WriteRemediationBackup("registry-backup", new RegistryValueBackup(identifier, currentValue.ToString() ?? "", valueKind.ToString()));
+
+        key.DeleteValue(valueName, throwOnMissingValue: false);
+
+        var detail = $"Removed persistence registry value '{identifier}'.";
+        _logger.LogAudit(nameof(WindowsResponseExecutor), "RemovePersistenceArtifact", hostId, "Success", detail);
+        return new ResponseActionResult { Success = true, Detail = detail, Reversible = true, RollbackToken = "registry-backup:" + backupPath };
+    }
+
+    private ResponseActionResult RestoreRegistryValue(string hostId, string backupPath)
+    {
+        if (!File.Exists(backupPath))
+            return new ResponseActionResult { Success = false, Detail = $"No registry-value backup found at '{backupPath}'.", Reversible = false };
+
+        var backup = JsonSerializer.Deserialize<RegistryValueBackup>(File.ReadAllText(backupPath))!;
+        if (!TryParseRegistryIdentifier(backup.Identifier, out var hive, out var path, out var valueName))
+            return new ResponseActionResult { Success = false, Detail = $"Could not parse backed-up identifier '{backup.Identifier}'.", Reversible = false };
+
+        using var baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Default);
+        using var key = baseKey.CreateSubKey(path, writable: true);
+        key.SetValue(valueName, backup.Value, (RegistryValueKind)Enum.Parse(typeof(RegistryValueKind), backup.ValueKind));
+
+        var detail = $"Restored persistence registry value '{backup.Identifier}'.";
+        _logger.LogAudit(nameof(WindowsResponseExecutor), "RestorePersistenceArtifact", hostId, "Success", detail);
+        File.Delete(backupPath);
+        return new ResponseActionResult { Success = true, Detail = detail, Reversible = false };
+    }
+
+    /// <summary>Parses "{Hive}\{Path}\{ValueName}" back into its parts - the exact inverse of
+    /// RegistryPersistenceCollector's own <c>$@"{hive}\{path}\{valueName}"</c> ObjectId format.</summary>
+    private static bool TryParseRegistryIdentifier(string identifier, out RegistryHive hive, out string path, out string valueName)
+    {
+        hive = default;
+        path = "";
+        valueName = "";
+
+        var firstSep = identifier.IndexOf('\\');
+        var lastSep = identifier.LastIndexOf('\\');
+        if (firstSep < 0 || lastSep <= firstSep) return false;
+
+        if (!Enum.TryParse(identifier.Substring(0, firstSep), ignoreCase: true, out hive)) return false;
+
+        path = identifier.Substring(firstSep + 1, lastSep - firstSep - 1);
+        valueName = identifier.Substring(lastSep + 1);
+        return path.Length > 0 && valueName.Length > 0;
+    }
+
+    /// <summary>ServiceController exposes no start-type property, so this reads it straight from
+    /// the registry (2=Auto, 3=Manual, 4=Disabled) before DisableServiceAsync overwrites it.</summary>
+    private static int? TryReadServiceStartType(string serviceName)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\{serviceName}");
+            return key?.GetValue("Start") as int?;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string WriteRemediationBackup<T>(string kind, T backup)
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AegisDefense", "remediation-backups");
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, $"{kind}-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(backup));
+        return path;
     }
 
     private bool Matches(string hostId) => string.Equals(hostId, _hostId, StringComparison.OrdinalIgnoreCase);

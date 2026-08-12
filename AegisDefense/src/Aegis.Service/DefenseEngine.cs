@@ -487,6 +487,105 @@ public sealed class DefenseEngine
         return alert;
     }
 
+    // --- Alert remediation (v2.3): manual (Remove/Quarantine/Ignore, from the GUI) and
+    // automatic (EngineToggles.AutoRemediationEnabled, from DecideAndActAsync) both funnel
+    // through RemediateFromEvidenceAsync - neither path invents its own list of what to act
+    // on, both act only on artifacts the alert's own evidence events actually identify.
+
+    /// <summary>Executes an operator-chosen action against a specific alert. <see cref="AlertActionKind.Ignore"/>
+    /// takes no remediation action at all (just marks the alert FalsePositive); Remove/Quarantine
+    /// both act only on the alert's own evidence, never a general sweep of the host.</summary>
+    public async Task<(bool Success, string Detail, IReadOnlyList<string> ActionsTaken)> ExecuteAlertActionAsync(Guid alertId, AlertActionKind action)
+    {
+        var alert = await _alerts.GetByIdAsync(alertId).ConfigureAwait(false);
+        if (alert is null) return (false, $"No alert found with id '{alertId}'.", Array.Empty<string>());
+
+        if (action == AlertActionKind.Ignore)
+        {
+            alert.Status = AlertStatus.FalsePositive;
+            await _alerts.UpsertAsync(alert).ConfigureAwait(false);
+            _logger.LogAudit(nameof(DefenseEngine), "AlertIgnored", alert.HostId, "Success", $"alert={alertId}");
+            return (true, "Alert marked as false positive / ignored - no remediation taken.", Array.Empty<string>());
+        }
+
+        var evidenceEvents = await _events.GetByIdsAsync(alert.EvidenceEventIds).ConfigureAwait(false);
+        var actionsTaken = await RemediateFromEvidenceAsync(alert.HostId, evidenceEvents, quarantineOnly: action == AlertActionKind.Quarantine).ConfigureAwait(false);
+
+        if (actionsTaken.Count == 0)
+        {
+            actionsTaken.Add("No actionable artifacts found in this alert's evidence (no process id, executable path, persistence artifact, or destination IP to act on).");
+        }
+
+        alert.Status = AlertStatus.Contained;
+        alert.AppliedResponse = ResponseLevel.Contain;
+        foreach (var line in actionsTaken)
+        {
+            if (!alert.EvidenceSummary.Contains(line)) alert.EvidenceSummary.Add(line);
+        }
+        await _alerts.UpsertAsync(alert).ConfigureAwait(false);
+
+        var detail = string.Join(" | ", actionsTaken);
+        _logger.LogAudit(nameof(DefenseEngine), "ManualRemediation", alert.HostId, "Success", $"alert={alertId} action={action}: {detail}");
+        return (true, detail, actionsTaken);
+    }
+
+    /// <summary>
+    /// Walks the events that make up an alert's own evidence and takes exactly one bounded
+    /// action per distinct artifact identified in them: terminate the process, quarantine the
+    /// file it ran from, disable the persistence mechanism it created, block the destination it
+    /// talked to. <paramref name="quarantineOnly"/> restricts this to the file-quarantine step
+    /// alone (the GUI's lighter-touch "Quarantine" action) - everything else is skipped.
+    /// Deliberately reads only what the evidence already contains; this is not a general host
+    /// sweep and never invents targets beyond what triggered the alert in the first place.
+    /// </summary>
+    private async Task<List<string>> RemediateFromEvidenceAsync(string hostId, IReadOnlyList<NormalizedEvent> evidenceEvents, bool quarantineOnly)
+    {
+        var actions = new List<string>();
+        var handledProcessIds = new HashSet<int>();
+        var handledFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var handledArtifacts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var handledDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var evt in evidenceEvents)
+        {
+            if (!quarantineOnly && evt.ProcessId is { } pid && handledProcessIds.Add(pid))
+            {
+                var result = await _responseExecutor.TerminateProcessAsync(hostId, pid, evt.ImagePath).ConfigureAwait(false);
+                actions.Add(AlertEvidenceMarkers.RemediationActionPrefix + (result.Success
+                    ? $"Suspended process (PID {pid}, {evt.ImagePath ?? "unknown image"})."
+                    : $"Failed to suspend PID {pid}: {result.Detail}"));
+            }
+
+            if (evt.ActionType is ActionType.ProcessCreate or ActionType.ScriptExecution && evt.ImagePath is { } imagePath && handledFiles.Add(imagePath))
+            {
+                var result = await _responseExecutor.QuarantineFileAsync(hostId, imagePath).ConfigureAwait(false);
+                actions.Add(AlertEvidenceMarkers.RemediationActionPrefix + (result.Success
+                    ? $"Quarantined file: {imagePath}."
+                    : $"Could not quarantine '{imagePath}': {result.Detail}"));
+            }
+
+            if (!quarantineOnly && EventSemantics.IsPersistenceArtifact(evt.ActionType) && evt.ObjectId is { } artifactId && handledArtifacts.Add(artifactId))
+            {
+                var result = await _responseExecutor.RemovePersistenceArtifactAsync(hostId, new PersistenceArtifactRef(evt.ActionType, artifactId)).ConfigureAwait(false);
+                actions.Add(AlertEvidenceMarkers.RemediationActionPrefix + (result.Success
+                    ? $"Removed persistence artifact: {artifactId}."
+                    : $"Could not remove persistence artifact '{artifactId}': {result.Detail}"));
+            }
+
+            if (!quarantineOnly && evt.DestinationIp is { } destIp && handledDestinations.Add(destIp))
+            {
+                var result = await _responseExecutor.ApplyFirewallRestrictionAsync(hostId, new FirewallRestriction(
+                    RuleName: $"remediation-{destIp.Replace(':', '-')}", Direction: "out", Protocol: "TCP",
+                    RemoteAddress: destIp, RemotePort: evt.DestinationPort, Action: "block")).ConfigureAwait(false);
+                actions.Add(AlertEvidenceMarkers.RemediationActionPrefix + (result.Success
+                    ? $"Blocked network connection to {destIp}{(evt.DestinationPort is { } port ? ":" + port : "")}."
+                    : $"Could not block connection to {destIp}: {result.Detail}"));
+            }
+        }
+
+        return actions;
+    }
+
     private async Task DecideAndActAsync(Alert alert, HostRiskBreakdown risk)
     {
         var candidatePlaybookAction = risk.Total >= _activePolicy.Thresholds.ContainAt ? "isolate-test-endpoint" : null;
@@ -525,6 +624,29 @@ public sealed class DefenseEngine
         alert.AppliedResponse = decision.Level;
         await _alerts.UpsertAsync(alert).ConfigureAwait(false);
         _logger.LogAudit(nameof(DefenseEngine), "AutoResponse", alert.HostId, result.Success ? "Success" : "Failure", $"alert={alert.AlertId} level={decision.Level} detail={result.Detail}");
+
+        // Automatic full remediation (v2.3, opt-in via EngineToggles.AutoRemediationEnabled) -
+        // layered on top of containment, never a substitute for it, and only reachable at all
+        // once the safety gate above (AutoContainmentEnabled + not autonomy-dominated + not
+        // requiring approval) has already allowed auto-execution at Contain/EnterpriseResponse.
+        // Terminates the offending process, quarantines the file it ran from, disables any
+        // persistence artifact, and blocks the flagged destination - exactly the same,
+        // evidence-scoped logic as the GUI's manual "Remove" action, just triggered
+        // automatically instead of by a click.
+        if (decision.Level is ResponseLevel.Contain or ResponseLevel.EnterpriseResponse && _activePolicy.Engines.AutoRemediationEnabled)
+        {
+            var evidenceEvents = await _events.GetByIdsAsync(alert.EvidenceEventIds).ConfigureAwait(false);
+            var remediationActions = await RemediateFromEvidenceAsync(alert.HostId, evidenceEvents, quarantineOnly: false).ConfigureAwait(false);
+            if (remediationActions.Count > 0)
+            {
+                foreach (var line in remediationActions)
+                {
+                    if (!alert.EvidenceSummary.Contains(line)) alert.EvidenceSummary.Add(line);
+                }
+                await _alerts.UpsertAsync(alert).ConfigureAwait(false);
+                _logger.LogAudit(nameof(DefenseEngine), "AutoRemediation", alert.HostId, "Success", $"alert={alert.AlertId}: {string.Join(" | ", remediationActions)}");
+            }
+        }
     }
 
     private async Task<ResponseActionResult> ApplyRestrictionAsync(Alert alert)

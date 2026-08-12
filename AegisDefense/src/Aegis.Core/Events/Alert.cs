@@ -21,6 +21,35 @@ public enum AlertStatus
     FalsePositive = 5,
 }
 
+/// <summary>Shared prefix conventions for <see cref="Alert.EvidenceSummary"/> lines, so a
+/// consumer (the GUI's notification-diffing logic) can tell a remediation action apart from a
+/// routine rule-finding description without guessing at wording. A finding line looks like
+/// <c>"[AEG-001] ..."</c> (the rule id); a remediation action line is prefixed with
+/// <see cref="RemediationActionPrefix"/> instead.</summary>
+public static class AlertEvidenceMarkers
+{
+    public const string RemediationActionPrefix = "[ACTION] ";
+}
+
+/// <summary>Manual action an operator (or, for <see cref="Remove"/>, the automatic-remediation
+/// pipeline) can take against a specific alert. <see cref="Remove"/> and <see cref="Quarantine"/>
+/// both act only on artifacts identified in that alert's own evidence events - never a
+/// general-purpose cleanup pass over the host.</summary>
+public enum AlertActionKind
+{
+    /// <summary>Full removal: terminate the offending process(es), quarantine the file(s) they
+    /// ran from, disable any persistence artifact in the evidence, and block the flagged
+    /// destination IP(s).</summary>
+    Remove = 0,
+    /// <summary>Lighter touch: quarantine the implicated file(s) only - leaves the process
+    /// running and persistence artifacts untouched. Useful when you want the sample preserved
+    /// (moved somewhere inert) without disrupting whatever else the process/service is doing.</summary>
+    Quarantine = 1,
+    /// <summary>No remediation - marks the alert FalsePositive/dismissed so it stops
+    /// contributing to open-alert counts and coalescing.</summary>
+    Ignore = 2,
+}
+
 /// <summary>
 /// A fused, human/GUI-facing incident. Alerts are produced by the rule engine, the
 /// composite risk engine, or the attack-state estimator escalating a campaign -

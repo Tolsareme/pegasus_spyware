@@ -1,5 +1,68 @@
 # Changelog
 
+## v2.3 - enterprise remediation actions + interactive notifications
+
+Implements the operator ask: "a setting that lets detection either just create an alert
+(as today), or also pop an actionable notification (Remove / Quarantine / Ignore), plus an
+automatic mode that removes the threat and rolls back what it did - and in every case,
+notifications for what the attack did and what was done about it (suspended process,
+blocked network connection, etc.)."
+
+**Scoping note, stated up front:** "rollback" here means bounded, reversible,
+evidence-scoped actions - quarantine (move + inert, restorable), not delete; disable
+(restorable), not uninstall, for services/scheduled tasks; registry values are backed up
+before being deleted so they can be restored. It is not a system-image time machine, and it
+never fires on `AutonomyScore` alone - automatic remediation is a layer on top of the
+existing `AutoContainmentEnabled` gate and the `IsAutonomyDominated` safety check, never a
+way around them.
+
+- **Response actions** (`Aegis.ResponseActions.WindowsResponseExecutor`): quarantine/restore
+  a file (`%ProgramData%\AegisDefense\quarantine`, with a JSON sidecar recording the
+  original path so it can be put back exactly where it came from); disable/restore a
+  persistence artifact - service (start-type backed up first), scheduled task
+  (`schtasks /Change /DISABLE`), or registry run-key value (value + kind backed up before
+  delete) - dispatched from the same `ObjectId` identity each collector already produces, so
+  "the artifact this alert's evidence points at" and "the artifact remediation acts on" are
+  guaranteed to be the same thing.
+- **Manual alert actions**: new `ExecuteAlertAction` IPC message and `AlertActionKind`
+  (`Remove` / `Quarantine` / `Ignore`), wired through `DefenseEngine.ExecuteAlertActionAsync`.
+  `Remove` walks the alert's own evidence events and terminates the process, quarantines its
+  file, disables any persistence artifact, and blocks the flagged destination IP - never a
+  general host-wide cleanup pass. `Quarantine` only touches the file(s). `Ignore` marks the
+  alert `FalsePositive`. Every action taken is appended to the alert's own
+  `EvidenceSummary` (prefixed `[ACTION] `) so the audit trail and the GUI's notification
+  feed can tell a finding line from a remediation line without guessing at wording.
+- **Automatic remediation mode** (`EngineToggles.AutoRemediationEnabled`, opt-in, off by
+  default): when a decision already resolved to `Contain`/`EnterpriseResponse` and
+  auto-containment already ran, this additionally runs the same evidence-scoped remediation
+  as the manual `Remove` action - "remove the threat and restore normal operation"
+  automatically, gated behind the same safety checks as every other auto-executed action.
+- **Interactive notifications**: `NotificationSettings.Mode` (`AlertsOnly` /
+  `InteractiveAction`, console-side only - has no effect on detection or on what the
+  service does). In `InteractiveAction` mode, a new alert pops a non-modal
+  `ThreatNotificationWindow` toast (stacked bottom-right, like a notification center) with
+  Remove/Quarantine/Ignore buttons wired to the same commands as the Alerts tab. Every
+  response action (manual or automatic) also fires a tray balloon when
+  `NotifyOnResponseActions` is on (default), so containment/remediation is never silent even
+  when the console window isn't focused.
+- GUI: Remove/Quarantine/Ignore buttons on the Alerts tab, an evidence/response-action panel
+  under the alerts grid, and both new toggles on the Policy & Autonomy tab - all
+  Administrator-gated client-side, and enforced server-side (`ExecuteAlertAction` is in
+  `IpcRequestHandler`'s mutating-message set, which Analyst-role callers can't invoke).
+
+Also includes a batch of real-Windows validation fixes found while hands-on testing v2.2 on
+a physical machine (see `docs/WINDOWS_VALIDATION_CHECKLIST.md` for the full narrative):
+SQLite native library load failure (`PlatformTarget=x64`), named-pipe RBAC role resolution
+(`TokenImpersonationLevel.Impersonation` on the client, caller-identity resolution moved to
+after the first pipe read), an Events-tab column-clipping fix, and a four-round
+alert-flooding investigation whose real root cause was mixed UTC/local timezone offsets
+breaking the string-based timestamp comparison behind alert deduplication - fixed alongside
+sticky-correlation-field leakage in `HostBehaviorProfile` and a check-then-act race in the
+new alert-coalescing logic that caused it.
+
+Test suite: 103 → 112 (Windows validation fixes) → 117 (this feature), all passing. Full
+solution (all 9 projects) builds with zero errors/warnings.
+
 ## v2.2 - patch rollout orchestrator wired end-to-end
 
 - `PatchRolloutOrchestrator` (previously a standalone, tested-but-unwired component) is now

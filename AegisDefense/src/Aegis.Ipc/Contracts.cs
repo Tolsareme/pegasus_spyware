@@ -42,7 +42,11 @@ public static class MessageTypes
     public const string RecordPatchRingHealthCheck = "RecordPatchRingHealthCheck";
     public const string ClosePatchMitigation = "ClosePatchMitigation";
     public const string RollbackPatchPlan = "RollbackPatchPlan";
+    public const string ExecuteAlertAction = "ExecuteAlertAction";
 }
+
+public sealed record ExecuteAlertActionRequest(Guid AlertId, AlertActionKind Action);
+public sealed record ExecuteAlertActionResponse(bool Success, string Detail, IReadOnlyList<string> ActionsTaken);
 
 public sealed record GetAlertsRequest(string? HostId, AlertStatus? StatusFilter, int Take = 200);
 public sealed record GetAlertsResponse(IReadOnlyList<Alert> Alerts);

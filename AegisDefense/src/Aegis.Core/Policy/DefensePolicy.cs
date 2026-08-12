@@ -15,6 +15,46 @@ public sealed class EngineToggles
     public bool VulnerabilityIntelEnabled { get; set; } = true;
     public bool AutoContainmentEnabled { get; set; } = false; // opt-in: off by default, an operator must consciously enable automated containment
     public bool VirtualMitigationEnabled { get; set; } = false;
+
+    /// <summary>
+    /// Opt-in, off by default: on top of AutoContainmentEnabled's network isolation, also
+    /// automatically terminate the offending process, quarantine the file it ran from, disable
+    /// any persistence artifact identified in the alert's own evidence, and block the flagged
+    /// destination - the "remove the threat and restore normal operation" automatic mode. This
+    /// never fires on AutonomyScore alone (see ResponsePolicyEngine.IsAutonomyDominated) and
+    /// only ever acts on artifacts the alert's own evidence events identify - never a
+    /// general-purpose cleanup pass over the whole host.
+    /// </summary>
+    public bool AutoRemediationEnabled { get; set; } = false;
+}
+
+/// <summary>How the console surfaces a new alert: <see cref="AlertsOnly"/> means "as before" -
+/// it just appears in the Alerts tab on the next refresh. <see cref="InteractiveAction"/> also
+/// pops an actionable notification (Remove/Quarantine/Ignore) the moment it's seen.</summary>
+public enum NotificationMode
+{
+    AlertsOnly = 0,
+    InteractiveAction = 1,
+}
+
+/// <summary>Console-side notification behavior (v2.3) - purely a GUI/UX setting, has no effect
+/// on detection or on what the service itself does; see <see cref="EngineToggles.AutoRemediationEnabled"/>
+/// for the setting that controls automated action.</summary>
+public sealed class NotificationSettings
+{
+    public NotificationMode Mode { get; set; } = NotificationMode.AlertsOnly;
+
+    /// <summary>Whether to also pop an informational toast for every response action taken
+    /// (manual or automatic) - "Process suspended: X", "Network connection blocked: Y", etc.</summary>
+    public bool NotifyOnResponseActions { get; set; } = true;
+
+    /// <summary>Two-way convenience view of <see cref="Mode"/> as a single bool, so a plain GUI
+    /// checkbox can bind to it directly instead of needing an enum-to-radio-button converter.</summary>
+    public bool InteractiveNotificationsEnabled
+    {
+        get => Mode == NotificationMode.InteractiveAction;
+        set => Mode = value ? NotificationMode.InteractiveAction : NotificationMode.AlertsOnly;
+    }
 }
 
 /// <summary>Composite-risk (0-100) cut points that select a <see cref="ResponseLevel"/>. Mirrors the doc §14 risk/mode table.</summary>
@@ -84,6 +124,9 @@ public sealed class DefensePolicy
 
     /// <summary>Central Fleet Hub reporting (v2) - enables cross-host correlation. Disabled by default; a single isolated host works fully without one.</summary>
     public FleetSettings Fleet { get; set; } = new();
+
+    /// <summary>Console notification behavior (v2.3) - see <see cref="Policy.NotificationSettings"/>.</summary>
+    public NotificationSettings Notifications { get; set; } = new();
 
     public AutonomyScoreWeights AutonomyWeights { get; set; } = AutonomyScoreWeights.Default;
     public HostRiskWeights RiskWeights { get; set; } = HostRiskWeights.Default;

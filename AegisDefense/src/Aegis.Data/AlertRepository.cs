@@ -52,6 +52,17 @@ ON CONFLICT(alert_id) DO UPDATE SET
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    public async Task<Alert?> GetByIdAsync(Guid alertId, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT * FROM alerts WHERE alert_id = $alert_id;";
+        cmd.Parameters.AddWithValue("$alert_id", alertId.ToString());
+
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadAlert(reader) : null;
+    }
+
     public async Task<bool> UpdateStatusAsync(Guid alertId, AlertStatus status, CancellationToken ct = default)
     {
         using var connection = _db.OpenConnection();

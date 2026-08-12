@@ -121,21 +121,39 @@
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,0,0,6">
                         <Button Content="Acknowledge" Command="{Binding AckAlertCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"/>
                         <Button Content="Mark Investigating" Command="{Binding ContainAlertHostCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"/>
+                        <Separator Margin="8,0"/>
+                        <Button Content="Remove" Command="{Binding RemoveThreatCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"
+                                ToolTip="Terminate the process, quarantine its file, disable persistence, block the destination - all scoped to this alert's evidence."/>
+                        <Button Content="Quarantine" Command="{Binding QuarantineThreatCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"
+                                ToolTip="Quarantine the implicated file(s) only - leaves the process and persistence untouched."/>
+                        <Button Content="Ignore" Command="{Binding IgnoreThreatCommand}" CommandParameter="{Binding SelectedAlert}" IsEnabled="{Binding IsAdministrator}"
+                                ToolTip="No remediation - marks the alert as a false positive."/>
                     </StackPanel>
-                    <DataGrid x:Name="AlertsGrid" ItemsSource="{Binding Alerts}" SelectedItem="{Binding SelectedAlert}">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Created" Binding="{Binding CreatedAt}" Width="150"/>
-                            <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="120"/>
-                            <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="220"/>
-                            <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="80"/>
-                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100"/>
-                            <DataGridTextColumn Header="Attack State" Binding="{Binding EstimatedState}" Width="120"/>
-                            <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence, StringFormat={}{0:P0}}" Width="90"/>
-                            <DataGridTextColumn Header="Recommended" Binding="{Binding RecommendedResponse}" Width="110"/>
-                            <DataGridTextColumn Header="Applied" Binding="{Binding AppliedResponse}" Width="90"/>
-                            <DataGridTextColumn Header="Campaign" Binding="{Binding CampaignId}" Width="90"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="6"/>
+                            <RowDefinition Height="1*"/>
+                        </Grid.RowDefinitions>
+                        <DataGrid x:Name="AlertsGrid" Grid.Row="0" ItemsSource="{Binding Alerts}" SelectedItem="{Binding SelectedAlert}">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Created" Binding="{Binding CreatedAt}" Width="150"/>
+                                <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="120"/>
+                                <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="220"/>
+                                <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="80"/>
+                                <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="100"/>
+                                <DataGridTextColumn Header="Attack State" Binding="{Binding EstimatedState}" Width="120"/>
+                                <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence, StringFormat={}{0:P0}}" Width="90"/>
+                                <DataGridTextColumn Header="Recommended" Binding="{Binding RecommendedResponse}" Width="110"/>
+                                <DataGridTextColumn Header="Applied" Binding="{Binding AppliedResponse}" Width="90"/>
+                                <DataGridTextColumn Header="Campaign" Binding="{Binding CampaignId}" Width="90"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" Background="#3A3C4A"/>
+                        <GroupBox Grid.Row="2" Header="Evidence &amp; response actions for selected alert">
+                            <ListBox ItemsSource="{Binding SelectedAlert.EvidenceSummary}" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                        </GroupBox>
+                    </Grid>
                 </DockPanel>
             </TabItem>
 
@@ -244,10 +262,23 @@
                                 <Separator Margin="0,6"/>
                                 <CheckBox Content="Auto-containment (allow Restrict/Contain actions to execute automatically when policy permits)"
                                           IsChecked="{Binding Engines.AutoContainmentEnabled}" FontWeight="Bold"/>
+                                <CheckBox IsChecked="{Binding Engines.AutoRemediationEnabled}" FontWeight="Bold" Margin="0,4,0,0">
+                                    <TextBlock Text="Automatic mode: also remove the threat and roll back what it did (terminate process, quarantine file, disable persistence, block destination) - requires auto-containment above" TextWrapping="Wrap" FontWeight="Bold"/>
+                                </CheckBox>
                                 <CheckBox Content="Virtual mitigation (allow automatic temporary mitigations for known vulnerabilities)"
                                           IsChecked="{Binding Engines.VirtualMitigationEnabled}"/>
                                 <CheckBox Content="High-impact actions require human approval (recommended: always on)"
                                           IsChecked="{Binding HighImpactActionsRequireApproval}" FontWeight="Bold"/>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Console notifications">
+                            <StackPanel>
+                                <TextBlock Text="Purely a console/UX setting - has no effect on detection or on what the service itself does automatically (that's controlled by the engine toggles above)." Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                <CheckBox Content="Pop an actionable notification (Remove / Quarantine / Ignore) for every new alert, in addition to it appearing in the Alerts tab"
+                                          IsChecked="{Binding Notifications.InteractiveNotificationsEnabled}"/>
+                                <CheckBox Content="Notify for every response action taken (process suspended, network connection blocked, file quarantined, persistence removed, etc.)"
+                                          IsChecked="{Binding Notifications.NotifyOnResponseActions}"/>
                             </StackPanel>
                         </GroupBox>
 

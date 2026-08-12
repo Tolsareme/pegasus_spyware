@@ -1,3 +1,5 @@
+using Aegis.Core.Events;
+
 namespace Aegis.Core.Response;
 
 public sealed record ResponseActionResult
@@ -11,6 +13,19 @@ public sealed record ResponseActionResult
 }
 
 public sealed record FirewallRestriction(string RuleName, string Direction, string Protocol, string? RemoteAddress, int? RemotePort, string Action);
+
+/// <summary>
+/// Identifies one persistence artifact to remove/disable, in exactly the shape the collectors
+/// that observe it already produce: <see cref="Kind"/> is the same <see cref="ActionType"/>
+/// <c>EventSemantics.IsPersistenceArtifact</c> recognizes, and <see cref="Identifier"/> matches
+/// that collector's own <c>ObjectId</c> convention - a service name for
+/// <see cref="ActionType.ServiceCreate"/>/<see cref="ActionType.ServiceChange"/>, a scheduled
+/// task path for <see cref="ActionType.ScheduledTaskCreate"/>/<see cref="ActionType.ScheduledTaskChange"/>,
+/// or <c>"{hive}\{path}\{valueName}"</c> for <see cref="ActionType.RegistrySet"/> (see
+/// <c>RegistryPersistenceCollector</c>). This means a triggering <see cref="NormalizedEvent"/>
+/// can be turned directly into a removal request with no extra parsing/lookup step.
+/// </summary>
+public sealed record PersistenceArtifactRef(ActionType Kind, string Identifier);
 
 /// <summary>
 /// The full menu of bounded, reversible containment/mitigation actions doc §14/§17 allow an
@@ -47,4 +62,24 @@ public interface IResponseExecutor
     /// be "undone" - the user still has to set a new password - but access is restored, matching the doc's
     /// reversibility requirement for automated actions wherever the underlying action allows it.</summary>
     Task<ResponseActionResult> RestoreCredentialAsync(string hostId, string identity, CancellationToken ct = default);
+
+    /// <summary>Moves a file believed to be malicious out of place into a locked-down
+    /// quarantine location (doc-aligned "bounded, reversible" action - not deletion, so a false
+    /// positive is always recoverable via <see cref="RestoreQuarantinedFileAsync"/>). Returns
+    /// <see cref="ResponseActionResult.RollbackToken"/> pointing at the quarantined copy.</summary>
+    Task<ResponseActionResult> QuarantineFileAsync(string hostId, string filePath, CancellationToken ct = default);
+
+    /// <summary>Reverses <see cref="QuarantineFileAsync"/>, moving the file back to its original location.</summary>
+    Task<ResponseActionResult> RestoreQuarantinedFileAsync(string hostId, string quarantineToken, CancellationToken ct = default);
+
+    /// <summary>Disables (never deletes outright - see implementation notes) the persistence
+    /// mechanism an attacker used to survive reboot/logoff: a service, a scheduled task, or a
+    /// registry run-key value. Deliberately conservative for the same reason
+    /// <see cref="DisableServiceAsync"/> disables rather than uninstalls - "the artifact stops
+    /// running" is the security-relevant outcome, and stopping short of deletion keeps the
+    /// action reversible and keeps forensic evidence intact for later investigation.</summary>
+    Task<ResponseActionResult> RemovePersistenceArtifactAsync(string hostId, PersistenceArtifactRef artifact, CancellationToken ct = default);
+
+    /// <summary>Reverses <see cref="RemovePersistenceArtifactAsync"/> using the token it returned.</summary>
+    Task<ResponseActionResult> RestorePersistenceArtifactAsync(string hostId, string restoreToken, CancellationToken ct = default);
 }

@@ -28,6 +28,7 @@ public sealed class IpcRequestHandler
         MessageTypes.RecordPatchRingHealthCheck,
         MessageTypes.ClosePatchMitigation,
         MessageTypes.RollbackPatchPlan,
+        MessageTypes.ExecuteAlertAction,
     };
 
     public IpcRequestHandler(DefenseEngine engine, IAegisLogger logger)
@@ -229,6 +230,12 @@ public sealed class IpcRequestHandler
                     var req = request.DeserializePayload<RollbackPatchPlanRequest>()!;
                     var (success, error, plan) = await _engine.RollbackPatchPlanAsync(req.PlanId, req.Reason).ConfigureAwait(false);
                     return request.CreateResponse(MessageTypes.RollbackPatchPlan, new PatchPlanActionResponse(success, error, plan));
+                }
+                case MessageTypes.ExecuteAlertAction:
+                {
+                    var req = request.DeserializePayload<ExecuteAlertActionRequest>()!;
+                    var (success, detail, actionsTaken) = await _engine.ExecuteAlertActionAsync(req.AlertId, req.Action).ConfigureAwait(false);
+                    return request.CreateResponse(MessageTypes.ExecuteAlertAction, new ExecuteAlertActionResponse(success, detail, actionsTaken));
                 }
                 default:
                     return request.CreateErrorResponse($"Unknown message type '{request.MessageType}'.");

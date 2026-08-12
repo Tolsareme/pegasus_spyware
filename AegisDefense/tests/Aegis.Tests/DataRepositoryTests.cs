@@ -171,6 +171,45 @@ public class DataRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task AlertRepository_GetById_ReturnsMatchingAlert_NullWhenMissing()
+    {
+        // GetByIdAsync backs DefenseEngine.ExecuteAlertActionAsync's initial lookup for the
+        // GUI's Remove/Quarantine/Ignore buttons - it needs the exact alert, not a filtered list.
+        var repo = new AlertRepository(_db);
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001" };
+        await repo.UpsertAsync(alert);
+
+        var found = await repo.GetByIdAsync(alert.AlertId);
+        Assert.NotNull(found);
+        Assert.Equal(alert.AlertId, found!.AlertId);
+
+        Assert.Null(await repo.GetByIdAsync(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task EventRepository_GetByIds_ReturnsOnlyRequestedEvents_EmptyForEmptyInput()
+    {
+        // GetByIdsAsync backs the remediation pipeline's evidence-event lookup
+        // (DefenseEngine.RemediateFromEvidenceAsync resolves an alert's EvidenceEventIds back
+        // into full NormalizedEvents to find the process/file/artifact/destination to act on).
+        var repo = new EventRepository(_db);
+        var e1 = new NormalizedEvent { EventId = Guid.NewGuid(), Timestamp = DateTimeOffset.UtcNow, HostId = "host-1", ActionType = ActionType.ProcessCreate, ObjectType = ObjectType.Process, Result = ActionResult.Success };
+        var e2 = new NormalizedEvent { EventId = Guid.NewGuid(), Timestamp = DateTimeOffset.UtcNow, HostId = "host-1", ActionType = ActionType.ProcessCreate, ObjectType = ObjectType.Process, Result = ActionResult.Success };
+        var e3 = new NormalizedEvent { EventId = Guid.NewGuid(), Timestamp = DateTimeOffset.UtcNow, HostId = "host-1", ActionType = ActionType.ProcessCreate, ObjectType = ObjectType.Process, Result = ActionResult.Success };
+        await repo.InsertAsync(e1);
+        await repo.InsertAsync(e2);
+        await repo.InsertAsync(e3);
+
+        var found = await repo.GetByIdsAsync(new[] { e1.EventId, e3.EventId });
+        Assert.Equal(2, found.Count);
+        Assert.Contains(found, e => e.EventId == e1.EventId);
+        Assert.Contains(found, e => e.EventId == e3.EventId);
+        Assert.DoesNotContain(found, e => e.EventId == e2.EventId);
+
+        Assert.Empty(await repo.GetByIdsAsync(Array.Empty<Guid>()));
+    }
+
+    [Fact]
     public async Task PolicyRepository_TracksActivePolicy()
     {
         var repo = new PolicyRepository(_db);

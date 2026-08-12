@@ -155,9 +155,25 @@ through. Two safety properties are enforced in code, not just policy:
 
 `Aegis.Core.Response.IResponseExecutor` is a closed, enumerated set of actions (isolate,
 release isolation, terminate one named process, apply/remove one firewall rule, disable one
-service, increase telemetry, revoke/restore one credential). There is intentionally no
+service, increase telemetry, revoke/restore one credential, and — v2.3 — quarantine/restore
+one file and disable/restore one persistence artifact). There is intentionally no
 "run arbitrary command" method anywhere — the policy engine's decision is the *only* path
 to a privileged effect (doc §29).
+
+**Remediation & interactive notifications (v2.3).** `EngineToggles.AutoRemediationEnabled`
+is a *second*, independent opt-in layered on top of `AutoContainmentEnabled`: even with both
+on, remediation only ever runs after `ResponsePolicyEngine.Decide` has already resolved to
+Contain/EnterpriseResponse through the two safety properties above, and it only ever acts on
+artifacts named in *that alert's own evidence events* (`DefenseEngine.RemediateFromEvidenceAsync`
+walks `Alert.EvidenceEventIds`, not a host-wide scan). The same code path backs the manual
+`ExecuteAlertAction` IPC message (`AlertActionKind.Remove`/`Quarantine`/`Ignore`) that the
+GUI's Alerts-tab buttons and the interactive notification popup both call — there is exactly
+one remediation implementation, invoked either by an operator's click or by the automatic
+pipeline, never two parallel ones to keep in sync. `NotificationSettings.Mode` is a
+console-only setting (`Aegis.Gui.MainViewModel.DetectNotifications`) with no effect on
+detection or on what the service does — it only decides whether the GUI pops an actionable
+toast for a new alert on top of it appearing in the Alerts tab, and whether a response action
+(manual or automatic) also raises a tray balloon.
 
 **RBAC (v2)** adds a second gate in front of that chokepoint for *who may ask* for a
 mutating action at all, independent of what the action is: `IpcRequestHandler` maps every
@@ -240,16 +256,21 @@ Being explicit about this matters more than pretending otherwise:
   per the WiX schema. The `.wxs` was authored carefully against documented WiX v5 syntax,
   but treat a real Windows build (`installer/build-installer.ps1`) as the first genuine
   verification, not a formality.
-- **Runtime behavior of every Windows-only project is unverified in this environment.**
-  `dotnet build AegisDefense.sln` — all project in the solution, including the WPF
-  `Aegis.Gui` — compiles cleanly with zero errors/warnings, confirmed during development,
-  and `Aegis.FleetHub` additionally has real HTTP integration tests that pass. What wasn't
-  (and can't be, without a Windows machine) verified here is *running* the endpoint side:
-  no WMI/ETW event actually fired, no named pipe actually connected, no `netsh`/AD call was
-  actually applied. Treat a real Windows install (`docs/OPERATIONS.md`) as the next
-  required verification step, and add it as a CI stage (a starting point is at
-  `.github/workflows/aegis-defense-ci.yml`, itself unverified against a real GitHub Actions
-  run in this environment for the same reason).
+- **Runtime behavior of every Windows-only project was unverified in this environment** —
+  now partially closed. `dotnet build AegisDefense.sln` compiles cleanly with zero
+  errors/warnings for every project in the solution, including the WPF `Aegis.Gui`, and
+  `Aegis.FleetHub` has real HTTP integration tests that pass; that much was always true. The
+  baseline install, RBAC, and detection/alerting path have since been validated live on a
+  real Windows 11 machine (see `docs/WINDOWS_VALIDATION_CHECKLIST.md` for the full
+  bug-by-bug narrative — SQLite native-library loading, named-pipe RBAC impersonation, and a
+  four-round alert-flooding investigation were all found and fixed this way, not by
+  inspection). **The v2.3 remediation/notification feature (quarantine, persistence
+  disable/restore, `ExecuteAlertAction`, the interactive notification popup, and
+  `AutoRemediationEnabled`) has not yet been through that live-Windows pass** — it built
+  clean and passed the cross-platform unit suite, but no quarantine actually moved a file,
+  no service/task/registry value was actually disabled or restored, and no toast has
+  actually popped on a real desktop. Treat that as the next required verification step
+  before relying on it, same as every other Windows-only capability in this project.
 
 ## Repository context
 

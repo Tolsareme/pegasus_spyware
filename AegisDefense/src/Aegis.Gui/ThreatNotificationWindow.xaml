@@ -1,0 +1,22 @@
+<Window x:Class="Aegis.Gui.ThreatNotificationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Aegis Defense - New Alert" Height="230" Width="380"
+        WindowStyle="ToolWindow" ResizeMode="NoResize" Topmost="True" ShowInTaskbar="False"
+        WindowStartupLocation="Manual" Background="#1C1E2A">
+    <Border BorderBrush="#3A3C4A" BorderThickness="1" Padding="14">
+        <StackPanel>
+            <TextBlock Text="{Binding Severity, StringFormat='New {0} Alert'}" FontWeight="Bold" FontSize="15" Foreground="#FC8181"/>
+            <TextBlock Text="{Binding HostId}" Foreground="#9A9CAD" Margin="0,2,0,6"/>
+            <TextBlock Text="{Binding Title}" TextWrapping="Wrap" Margin="0,0,0,4" Foreground="White"/>
+            <TextBlock Text="{Binding EstimatedState, StringFormat='Attack state: {0}'}" Foreground="#9A9CAD" Margin="0,0,0,2"/>
+            <TextBlock Text="{Binding Confidence, StringFormat='Confidence: {0:P0}'}" Foreground="#9A9CAD" Margin="0,0,0,10"/>
+            <TextBlock Text="Choose a response, or close this window to decide later from the Alerts tab." TextWrapping="Wrap" Foreground="#9A9CAD" FontSize="11" Margin="0,0,0,10"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="RemoveButton" Content="Remove" Width="80" Margin="0,0,6,0" Click="OnRemoveClick" ToolTip="Terminate the process, quarantine its file, disable persistence, block the destination - all scoped to this alert's evidence."/>
+                <Button x:Name="QuarantineButton" Content="Quarantine" Width="80" Margin="0,0,6,0" Click="OnQuarantineClick" ToolTip="Quarantine the implicated file(s) only - leaves the process and persistence untouched."/>
+                <Button x:Name="IgnoreButton" Content="Ignore" Width="80" Click="OnIgnoreClick" ToolTip="No remediation - marks the alert as a false positive."/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

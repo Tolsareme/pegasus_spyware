@@ -279,7 +279,57 @@ source of truth for "have we actually run this yet."
 - [ ] Restart the service mid-plan and confirm the plan's state survives (it's persisted
       after every transition, but this hasn't been confirmed against a real restart).
 
-## 11. Packaging & CI
+## 11. Remediation actions & interactive notifications (v2.3)
+
+- [ ] **Quarantine round-trip**: drop a harmless test file, trigger/simulate an alert whose
+      evidence points at it, click **Quarantine** (Alerts tab or the popup), confirm the file
+      actually moves to `%ProgramData%\AegisDefense\quarantine\<guid>.quarantined`, the
+      original is gone from its original path, and the `.meta.json` sidecar records the
+      correct original path. `RestoreQuarantinedFileAsync` has no GUI entry point yet
+      (see `docs/OPERATIONS.md`) - confirm it restores correctly when called directly (e.g.
+      a throwaway IPC script, same pattern as `scripts/Register-TestDecoy.ps1`).
+- [ ] **Remove**: same setup, click **Remove**, confirm *all four* effects happen for a test
+      alert with evidence covering each: the process is actually terminated, its file is
+      quarantined, a test persistence artifact (a disabled service/scheduled task/registry
+      run-key you created for this test only) is actually disabled, and a firewall rule
+      blocking the flagged destination actually appears (`netsh advfirewall` or the Windows
+      Firewall snap-in).
+- [ ] **Persistence-artifact disable/restore**: for each of the three kinds
+      (`DisablePersistenceServiceAsync`/`DisablePersistenceScheduledTaskAsync`/
+      `DisablePersistenceRegistryValue`), confirm the backup written to
+      `%ProgramData%\AegisDefense\remediation-backups\` actually round-trips through
+      `RestorePersistenceArtifactAsync` - service start type restored, scheduled task
+      re-enabled (`schtasks /Change /ENABLE`), registry value restored with the correct
+      `RegistryValueKind`. This exercises `TryParseRegistryIdentifier`'s exact-inverse
+      assumption against `RegistryPersistenceCollector`'s real `ObjectId` format on a live
+      registry, not just against test fixtures.
+- [ ] **Ignore**: confirm clicking Ignore sets the alert to `FalsePositive`, it drops out of
+      open-alert counts, and a subsequent matching detection within the coalesce window opens
+      a *new* alert rather than reopening the ignored one.
+- [ ] **Interactive notification popup**: enable `Notifications.InteractiveNotificationsEnabled`,
+      trigger a real detection, confirm the toast actually appears stacked bottom-right, is
+      topmost but doesn't steal focus/appear in the taskbar, and each of its three buttons
+      does the same thing as the matching Alerts-tab button and then closes the window.
+      Trigger two alerts close together and confirm the second toast stacks above the first
+      instead of overlapping it, and that closing one without choosing an action leaves the
+      alert exactly as-is in the Alerts tab (no implicit action).
+- [ ] **Response-action tray balloons**: with `NotifyOnResponseActions` on, confirm a manual
+      Remove/Quarantine and a real automatic remediation both raise a tray balloon describing
+      what happened, and that turning the setting off silences them without silencing the
+      critical-alert balloon (that's a separate, always-on path).
+- [ ] **`AutoRemediationEnabled` end-to-end**: with both it and `AutoContainmentEnabled` on,
+      trigger a detection that resolves to Contain/EnterpriseResponse and confirm remediation
+      fires *without* clicking anything, the actions taken land in the alert's evidence trail
+      and the audit log, and - critically - confirm it does **not** fire when
+      `AutoContainmentEnabled` is off even with `AutoRemediationEnabled` on (the layering
+      this feature depends on for safety), and does not fire on `AutonomyScore` alone (an
+      `IsAutonomyDominated`-capped decision should cap at Restrict and never reach this code
+      path at all).
+- [ ] **RBAC**: confirm an Analyst-role session has the Remove/Quarantine/Ignore buttons
+      disabled in the GUI, and separately confirm the server refuses `ExecuteAlertAction` for
+      an Analyst caller even via a raw IPC call that bypasses the GUI's own disabling.
+
+## 12. Packaging & CI
 
 - [ ] Run `installer\build-installer.ps1` on a real Windows machine with the WiX Toolset
       installed and confirm it actually produces a working `.msi` - **this has never
@@ -291,7 +341,7 @@ source of truth for "have we actually run this yet."
       actually green on `windows-latest` runners (they've been authored to match what was
       manually verified, but the workflow itself has not been observed running).
 
-## 12. Cross-version coverage
+## 13. Cross-version coverage
 
 The doc's core requirement is spanning old and new Windows plus Windows Server. At minimum,
 repeat the "Baseline" and "Telemetry collectors" sections (1-2 above) on:
@@ -306,7 +356,7 @@ historically had small but real differences across these - this is exactly the r
 `.NET Framework 4.8` was chosen to minimize at the *language/runtime* level, but it says
 nothing about OS API behavior itself.
 
-## 13. Things this checklist deliberately does not cover
+## 14. Things this checklist deliberately does not cover
 
 Not because they don't matter, but because they need more than "a Windows machine" -
 tracked separately:

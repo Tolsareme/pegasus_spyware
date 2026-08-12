@@ -323,3 +323,58 @@ from-source deployment — policy-signing key provisioning (step 3 above), Fleet
 configuration, and RBAC group creation are operator actions, not something an MSI can safely
 automate on your behalf (each is either a secret or a security-boundary decision that
 shouldn't be baked into a package silently).
+
+## v2.3: Remediation actions & interactive notifications
+
+Two independent settings, both on the **Policy & Autonomy** tab, both off by default:
+
+- **"Automatic mode: also remove the threat and roll back..."**
+  (`Engines.AutoRemediationEnabled`) — requires **Auto-containment** to also be on. When
+  both are enabled and a decision resolves to Contain/EnterpriseResponse, the service
+  automatically terminates the offending process, quarantines the file it ran from,
+  disables any persistence artifact identified in that alert's evidence, and blocks the
+  flagged destination — scoped strictly to what that alert's own evidence points at, never
+  a host-wide sweep. Every action taken is appended to the alert's evidence trail
+  (visible in the new panel under the Alerts grid) and to the audit log.
+- **Console notifications** (`Notifications.InteractiveNotificationsEnabled` /
+  `NotifyOnResponseActions`) — purely a console/UX setting, no effect on detection or on
+  what the service does automatically. With the first checkbox on, a new alert pops a
+  small non-modal window (stacked bottom-right of the screen) with **Remove** / **Quarantine**
+  / **Ignore** buttons — the same three actions available from the Alerts tab, just
+  surfaced immediately instead of waiting for you to notice the tab. With the second
+  checkbox on (default), every response action — manual or automatic — also raises a system
+  tray balloon, so containment/remediation is visible even when the console isn't focused.
+
+**Manual response, from the Alerts tab or the popup:**
+
+| Button | What it does |
+|---|---|
+| **Remove** | Terminates the process(es), quarantines the file(s) they ran from, disables any persistence artifact, and blocks the flagged destination — all scoped to that alert's own evidence. |
+| **Quarantine** | Quarantines the implicated file(s) only. Leaves the process running and persistence untouched — use this when you want the sample preserved (moved somewhere inert, sidecar records the original path) without disrupting anything else. |
+| **Ignore** | No remediation. Marks the alert `FalsePositive` so it stops counting toward open-alert stats and stops coalescing further matching detections into it. |
+
+All three require the Administrator role, both in the GUI (buttons disabled for an Analyst
+session) and server-side (`ExecuteAlertAction` is refused for Analyst callers regardless of
+what the GUI sends).
+
+**Quarantine and persistence-artifact locations**, if you need to inspect or manually
+restore something:
+
+- Quarantined files: `%ProgramData%\AegisDefense\quarantine\<guid>.quarantined`, with a
+  `.meta.json` sidecar recording the original path and the time it was quarantined.
+- Remediation backups (service start-type, registry values, needed to restore a disabled
+  persistence artifact): `%ProgramData%\AegisDefense\remediation-backups\`.
+
+There is currently no GUI button to *restore* a quarantined file or a disabled persistence
+artifact from these backups — `IResponseExecutor.RestoreQuarantinedFileAsync` /
+`RestorePersistenceArtifactAsync` exist and are exercised by `WindowsResponseExecutor`, but
+nothing calls them yet outside of that. Restoring today means either scripting an IPC call
+that reaches those methods, or reversing the action by hand from the backup files above.
+
+**Not yet live-Windows-validated** — see `docs/ARCHITECTURE.md`'s "Not yet implemented"
+section. Test this feature end-to-end on a real machine before relying on it: trigger a
+detection, confirm the popup appears (with `InteractiveNotificationsEnabled` on), click
+each of the three buttons on separate test alerts and confirm the expected file/process/
+persistence/firewall effect actually happened, and separately confirm
+`AutoRemediationEnabled` fires without a click when both it and auto-containment are on.
+`docs/WINDOWS_VALIDATION_CHECKLIST.md` has a checklist section for exactly this.

@@ -35,9 +35,14 @@ public sealed class TrayIconService : IDisposable
         _icon.DoubleClick += (_, _) => RestoreRequested?.Invoke();
     }
 
-    public void ShowCriticalAlertBalloon(string title, string message)
+    public void ShowCriticalAlertBalloon(string title, string message) =>
+        ShowBalloon(title, message, ToolTipIcon.Warning);
+
+    /// <summary>General-purpose balloon, e.g. for "response action taken" info notices that
+    /// aren't severe enough to warrant the Warning icon a new critical alert gets.</summary>
+    public void ShowBalloon(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
     {
-        _icon.BalloonTipIcon = ToolTipIcon.Warning;
+        _icon.BalloonTipIcon = icon;
         _icon.BalloonTipTitle = title;
         _icon.BalloonTipText = message;
         _icon.ShowBalloonTip(10_000);

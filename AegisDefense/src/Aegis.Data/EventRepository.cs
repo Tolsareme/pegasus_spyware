@@ -105,6 +105,34 @@ VALUES
         return results;
     }
 
+    /// <summary>Fetches specific events by id - used to resolve an alert's <c>EvidenceEventIds</c>
+    /// back into the actual events (process id, image path, destination, persistence artifact
+    /// identity, ...) a remediation action needs to know what to act on.</summary>
+    public async Task<IReadOnlyList<NormalizedEvent>> GetByIdsAsync(IReadOnlyList<Guid> eventIds, CancellationToken ct = default)
+    {
+        if (eventIds.Count == 0) return Array.Empty<NormalizedEvent>();
+
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+
+        var placeholders = new List<string>();
+        for (var i = 0; i < eventIds.Count; i++)
+        {
+            var name = $"$id{i}";
+            placeholders.Add(name);
+            cmd.Parameters.AddWithValue(name, eventIds[i].ToString());
+        }
+        cmd.CommandText = $"SELECT * FROM events WHERE event_id IN ({string.Join(",", placeholders)});";
+
+        var results = new List<NormalizedEvent>();
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            results.Add(ReadEvent(reader));
+        }
+        return results;
+    }
+
     public async Task<int> CountSinceAsync(DateTimeOffset since, CancellationToken ct = default)
     {
         using var connection = _db.OpenConnection();

@@ -33,6 +33,17 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     /// <summary>Raised when a refresh discovers a Critical-severity alert this session hasn't already seen - MainWindow subscribes to surface a tray balloon notification (v2).</summary>
     public event Action<Alert>? NewCriticalAlert;
 
+    /// <summary>Raised for every brand-new alert (any severity) when the active policy's
+    /// NotificationSettings.Mode is InteractiveAction - MainWindow subscribes to pop an
+    /// actionable Remove/Quarantine/Ignore notification window (v2.3).</summary>
+    public event Action<Alert>? NewAlertForInteractiveNotification;
+
+    /// <summary>Raised for each new "a response action was just taken" evidence line
+    /// (manual or automatic remediation) - MainWindow subscribes to show an informational
+    /// toast ("Process suspended: X", "Network connection blocked: Y", ...) regardless of
+    /// notification mode, gated only by NotificationSettings.NotifyOnResponseActions (v2.3).</summary>
+    public event Action<string>? ResponseActionTaken;
+
     private StatisticsSnapshot? _statistics;
     public StatisticsSnapshot? Statistics { get => _statistics; set => SetField(ref _statistics, value); }
 
@@ -130,6 +141,9 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     public RelayCommand BeginPatchRingDeploymentCommand { get; }
     public RelayCommand ClosePatchMitigationCommand { get; }
     public RelayCommand RollbackPatchPlanCommand { get; }
+    public RelayCommand RemoveThreatCommand { get; }
+    public RelayCommand QuarantineThreatCommand { get; }
+    public RelayCommand IgnoreThreatCommand { get; }
 
     private bool _hasCompletedFirstRefresh;
 
@@ -155,6 +169,9 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
         BeginPatchRingDeploymentCommand = new RelayCommand(_ => BeginPatchRingDeploymentAsync());
         ClosePatchMitigationCommand = new RelayCommand(_ => ClosePatchMitigationAsync());
         RollbackPatchPlanCommand = new RelayCommand(_ => RollbackPatchPlanAsync());
+        RemoveThreatCommand = new RelayCommand(p => ExecuteAlertActionAsync(p as Alert ?? SelectedAlert, AlertActionKind.Remove));
+        QuarantineThreatCommand = new RelayCommand(p => ExecuteAlertActionAsync(p as Alert ?? SelectedAlert, AlertActionKind.Quarantine));
+        IgnoreThreatCommand = new RelayCommand(p => ExecuteAlertActionAsync(p as Alert ?? SelectedAlert, AlertActionKind.Ignore));
 
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _refreshTimer.Tick += async (_, _) => await RefreshAllAsync().ConfigureAwait(true);
@@ -194,13 +211,18 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
 
         try
         {
+            // Fetched before alerts so DetectNotifications below always sees the current
+            // notification-mode policy, not last poll's.
+            var policy = await _client.RequestAsync<GetPolicyRequest, GetPolicyResponse>(MessageTypes.GetPolicy, new GetPolicyRequest()).ConfigureAwait(true);
+            ActivePolicy = policy.Policy;
+
             var stats = await _client.RequestAsync<GetStatisticsRequest, GetStatisticsResponse>(MessageTypes.GetStatistics, new GetStatisticsRequest()).ConfigureAwait(true);
             Statistics = stats.Statistics;
             RecordTrendPoint(stats.Statistics);
 
             var alerts = await _client.RequestAsync<GetAlertsRequest, GetAlertsResponse>(MessageTypes.GetAlerts, new GetAlertsRequest(null, null, 200)).ConfigureAwait(true);
             ReplaceAll(Alerts, alerts.Alerts);
-            DetectNewCriticalAlerts(alerts.Alerts);
+            DetectNotifications(alerts.Alerts);
 
             var hosts = await _client.RequestAsync<GetHostInventoryRequest, GetHostInventoryResponse>(MessageTypes.GetHostInventory, new GetHostInventoryRequest()).ConfigureAwait(true);
             ReplaceAll(Hosts, hosts.Hosts);
@@ -219,9 +241,6 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
 
             var patchPlans = await _client.RequestAsync<ListPatchPlansRequest, ListPatchPlansResponse>(MessageTypes.ListPatchPlans, new ListPatchPlansRequest()).ConfigureAwait(true);
             ReplaceAll(PatchPlans, patchPlans.Plans);
-
-            var policy = await _client.RequestAsync<GetPolicyRequest, GetPolicyResponse>(MessageTypes.GetPolicy, new GetPolicyRequest()).ConfigureAwait(true);
-            ActivePolicy = policy.Policy;
 
             var whoAmI = await _client.RequestAsync<WhoAmIRequest, WhoAmIResponse>(MessageTypes.WhoAmI, new WhoAmIRequest()).ConfigureAwait(true);
             Role = whoAmI.Role;
@@ -300,6 +319,28 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     {
         if (decoy is null || _client is null) return;
         await _client.RequestAsync<RemoveDecoyRequest, RemoveDecoyResponse>(MessageTypes.RemoveDecoy, new RemoveDecoyRequest(decoy.Id)).ConfigureAwait(true);
+        await RefreshAllAsync().ConfigureAwait(true);
+    }
+
+    // --- Threat remediation (v2.3) - available both from the Alerts tab's own buttons and
+    // from an interactive notification popup for a brand-new alert (same command, different
+    // caller passes the alert as CommandParameter instead of relying on SelectedAlert). ---
+
+    private async Task ExecuteAlertActionAsync(Alert? alert, AlertActionKind action)
+    {
+        if (alert is null || _client is null) return;
+        try
+        {
+            var response = await _client.RequestAsync<ExecuteAlertActionRequest, ExecuteAlertActionResponse>(
+                MessageTypes.ExecuteAlertAction, new ExecuteAlertActionRequest(alert.AlertId, action)).ConfigureAwait(true);
+            StatusMessage = response.Success
+                ? $"{action}: {response.Detail}"
+                : $"{action} failed: {response.Detail}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"{action} failed: {ex.Message}";
+        }
         await RefreshAllAsync().ConfigureAwait(true);
     }
 
@@ -507,20 +548,53 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
         return points;
     }
 
-    // --- Tray notifications ---
+    // --- Notifications (tray balloon for Critical alerts, interactive Remove/Quarantine/
+    // Ignore popups for brand-new alerts, informational toasts for response actions taken) ---
 
     private readonly HashSet<Guid> _knownCriticalAlertIds = new();
+    private readonly HashSet<Guid> _knownAlertIds = new();
+    private readonly Dictionary<Guid, int> _knownEvidenceLineCounts = new();
 
-    private void DetectNewCriticalAlerts(IReadOnlyList<Alert> alerts)
+    /// <summary>Runs every refresh. Three independent things can fire here per alert, each
+    /// gated differently: the Critical tray balloon (unconditional, doc-required baseline),
+    /// the interactive Remove/Quarantine/Ignore popup (only in InteractiveAction notification
+    /// mode, only for genuinely new alerts), and informational "action taken" toasts (gated by
+    /// NotifyOnResponseActions, fired for new [ACTION]-prefixed evidence lines on *any* alert,
+    /// old or new, since remediation can happen well after an alert was first seen).</summary>
+    private void DetectNotifications(IReadOnlyList<Alert> alerts)
     {
-        foreach (var alert in alerts.Where(a => a.Severity == AlertSeverity.Critical))
+        var interactiveModeOn = ActivePolicy?.Notifications.Mode == NotificationMode.InteractiveAction;
+        var notifyOnActions = ActivePolicy?.Notifications.NotifyOnResponseActions ?? true;
+
+        foreach (var alert in alerts)
         {
-            if (_knownCriticalAlertIds.Add(alert.AlertId) && _hasCompletedFirstRefresh)
+            var isNewAlert = _knownAlertIds.Add(alert.AlertId);
+
+            if (alert.Severity == AlertSeverity.Critical && isNewAlert && _hasCompletedFirstRefresh)
             {
                 // Only notify for alerts that appeared *after* the console connected - the
                 // first refresh seeds the "already known" set silently so a console pointed
                 // at a service with existing history doesn't fire a notification storm.
+                _knownCriticalAlertIds.Add(alert.AlertId);
                 NewCriticalAlert?.Invoke(alert);
+            }
+
+            if (isNewAlert && _hasCompletedFirstRefresh && interactiveModeOn)
+            {
+                NewAlertForInteractiveNotification?.Invoke(alert);
+            }
+
+            var previousLineCount = _knownEvidenceLineCounts.TryGetValue(alert.AlertId, out var count) ? count : 0;
+            _knownEvidenceLineCounts[alert.AlertId] = alert.EvidenceSummary.Count;
+            if (!_hasCompletedFirstRefresh || !notifyOnActions) continue;
+
+            for (var i = previousLineCount; i < alert.EvidenceSummary.Count; i++)
+            {
+                var line = alert.EvidenceSummary[i];
+                if (line.StartsWith(AlertEvidenceMarkers.RemediationActionPrefix, StringComparison.Ordinal))
+                {
+                    ResponseActionTaken?.Invoke($"{alert.HostId}: {line.Substring(AlertEvidenceMarkers.RemediationActionPrefix.Length)}");
+                }
             }
         }
     }
