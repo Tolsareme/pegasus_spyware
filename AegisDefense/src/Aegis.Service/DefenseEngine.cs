@@ -55,6 +55,14 @@ public sealed class DefenseEngine
 
     /// <summary>An anomaly score at or above this level, on its own, is enough to raise an alert even with zero rule findings - otherwise the "statistical/ML engine" (doc §8) could never independently catch anything the deterministic rules missed.</summary>
     private const double AnomalyOnlyAlertThreshold = 0.6;
+
+    /// <summary>How long a still-open alert for the same (host, rule-set) pair keeps absorbing
+    /// new evidence before a fresh occurrence gets its own alert instead. Confirmed necessary
+    /// via live Windows testing: without this, a rule whose condition stays true across a
+    /// sustained burst of events (e.g. a sustained high event rate) creates a brand-new alert
+    /// - and, worse, a brand-new response decision with no idempotency guard of its own, see
+    /// DecideAndActAsync - for literally every single qualifying event.</summary>
+    private static readonly TimeSpan AlertCoalesceWindow = TimeSpan.FromMinutes(5);
     private readonly Dictionary<string, HostBehaviorProfile> _hostProfiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _profileLock = new();
 
@@ -344,12 +352,43 @@ public sealed class DefenseEngine
                 vulnerabilityExposureScore: vulnerabilityExposure, attackSequenceScore: attackSequenceScore,
                 weights: _activePolicy.RiskWeights);
 
-            var alert = BuildAlert(evt, findings, risk, stateSnapshot, anomaly);
+            var candidateAlert = BuildAlert(evt, findings, risk, stateSnapshot, anomaly);
+
+            // Coalesce a repeated firing of the same rule(s) against the same host into the
+            // existing open alert (new evidence, refreshed severity/confidence) instead of
+            // inserting a new row - see AlertCoalesceWindow's doc comment for why this is a
+            // correctness fix, not just tidiness: DecideAndActAsync has no idempotency guard,
+            // so without this a sustained burst would re-request approval or re-execute a real
+            // containment action once per event.
+            var existingOpenAlert = await _alerts.FindRecentOpenAlertAsync(candidateAlert.HostId, candidateAlert.Source, AlertCoalesceWindow, evt.Timestamp).ConfigureAwait(false);
+
+            Alert alert;
+            var isNewAlert = existingOpenAlert is null;
+            if (existingOpenAlert is not null)
+            {
+                existingOpenAlert.EvidenceEventIds.Add(evt.EventId);
+                foreach (var line in candidateAlert.EvidenceSummary)
+                {
+                    if (!existingOpenAlert.EvidenceSummary.Contains(line)) existingOpenAlert.EvidenceSummary.Add(line);
+                }
+                if (candidateAlert.Severity > existingOpenAlert.Severity) existingOpenAlert.Severity = candidateAlert.Severity;
+                if (candidateAlert.Confidence > existingOpenAlert.Confidence) existingOpenAlert.Confidence = candidateAlert.Confidence;
+                existingOpenAlert.EstimatedState = candidateAlert.EstimatedState;
+                existingOpenAlert.RiskBreakdown = candidateAlert.RiskBreakdown;
+                alert = existingOpenAlert;
+            }
+            else
+            {
+                alert = candidateAlert;
+            }
+
             await _alerts.UpsertAsync(alert).ConfigureAwait(false);
 
-            await DecideAndActAsync(alert, risk).ConfigureAwait(false);
-
-            await _siemForwarder.ForwardAlertAsync(alert).ConfigureAwait(false);
+            if (isNewAlert)
+            {
+                await DecideAndActAsync(alert, risk).ConfigureAwait(false);
+                await _siemForwarder.ForwardAlertAsync(alert).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {

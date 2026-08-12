@@ -71,6 +71,59 @@ public class DataRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task AlertRepository_FindRecentOpenAlert_FindsMatchWithinWindow()
+    {
+        var repo = new AlertRepository(_db);
+        var now = DateTimeOffset.UtcNow;
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001", CreatedAt = now };
+        await repo.UpsertAsync(alert);
+
+        var found = await repo.FindRecentOpenAlertAsync("host-1", "AEG-001", TimeSpan.FromMinutes(5), now.AddMinutes(3));
+
+        Assert.NotNull(found);
+        Assert.Equal(alert.AlertId, found!.AlertId);
+    }
+
+    [Fact]
+    public async Task AlertRepository_FindRecentOpenAlert_IgnoresResolvedAlerts()
+    {
+        var repo = new AlertRepository(_db);
+        var now = DateTimeOffset.UtcNow;
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001", CreatedAt = now };
+        await repo.UpsertAsync(alert);
+        await repo.UpdateStatusAsync(alert.AlertId, AlertStatus.Resolved);
+
+        var found = await repo.FindRecentOpenAlertAsync("host-1", "AEG-001", TimeSpan.FromMinutes(5), now.AddMinutes(1));
+
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public async Task AlertRepository_FindRecentOpenAlert_IgnoresAlertsOutsideWindow()
+    {
+        var repo = new AlertRepository(_db);
+        var now = DateTimeOffset.UtcNow;
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001", CreatedAt = now };
+        await repo.UpsertAsync(alert);
+
+        var found = await repo.FindRecentOpenAlertAsync("host-1", "AEG-001", TimeSpan.FromMinutes(5), now.AddMinutes(10));
+
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public async Task AlertRepository_FindRecentOpenAlert_IgnoresDifferentHostOrSource()
+    {
+        var repo = new AlertRepository(_db);
+        var now = DateTimeOffset.UtcNow;
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001", CreatedAt = now };
+        await repo.UpsertAsync(alert);
+
+        Assert.Null(await repo.FindRecentOpenAlertAsync("host-2", "AEG-001", TimeSpan.FromMinutes(5), now.AddMinutes(1)));
+        Assert.Null(await repo.FindRecentOpenAlertAsync("host-1", "AEG-008", TimeSpan.FromMinutes(5), now.AddMinutes(1)));
+    }
+
+    [Fact]
     public async Task PolicyRepository_TracksActivePolicy()
     {
         var repo = new PolicyRepository(_db);

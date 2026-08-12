@@ -97,6 +97,32 @@ ON CONFLICT(alert_id) DO UPDATE SET
         return Convert.ToInt32(result);
     }
 
+    /// <summary>Finds the most recent still-open alert for this exact (host, source) pair
+    /// created within <paramref name="within"/> of <paramref name="asOf"/>, or null. Used to
+    /// coalesce repeated firings of the same rule against the same host into one growing
+    /// alert instead of a new row per event - see DefenseEngine.HandleEventAsync for why this
+    /// matters (confirmed as a real duplicate-alert-flood bug during live Windows testing).
+    /// "Open" excludes Resolved/FalsePositive so a genuinely new occurrence after an analyst
+    /// closes the previous one still gets its own alert.</summary>
+    public async Task<Alert?> FindRecentOpenAlertAsync(string hostId, string source, TimeSpan within, DateTimeOffset asOf, CancellationToken ct = default)
+    {
+        using var connection = _db.OpenConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+SELECT * FROM alerts
+WHERE host_id = $host_id AND source = $source
+  AND status NOT IN ('Resolved','FalsePositive')
+  AND created_at >= $since
+ORDER BY created_at DESC
+LIMIT 1;";
+        cmd.Parameters.AddWithValue("$host_id", hostId);
+        cmd.Parameters.AddWithValue("$source", source);
+        cmd.Parameters.AddWithValue("$since", (asOf - within).ToString("O"));
+
+        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadAlert(reader) : null;
+    }
+
     public async Task<IReadOnlyDictionary<string, int>> GetOpenCountsByHostAsync(CancellationToken ct = default)
     {
         using var connection = _db.OpenConnection();
