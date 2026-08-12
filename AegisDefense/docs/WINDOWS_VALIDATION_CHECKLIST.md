@@ -77,11 +77,30 @@ source of truth for "have we actually run this yet."
       type, so the rule kept re-firing on ordinary background activity (routine Windows
       service/task churn) for the rest of the host profile's in-memory lifetime. The same
       pattern affected two more rules (`CredentialAccessThenRemoteAuthRule`,
-      `ReconToActionPivotRule`). Fixed and covered by 3 new regression tests - see the commit
-      for the full explanation. This is exactly the class of bug only real, sustained live
-      traffic (not a unit test firing one or two synthetic events) surfaces - worth deliberately
+      `ReconToActionPivotRule`). Fixed and covered by 3 new regression tests.
+
+      **Then found a second, more fundamental bug on retest**: a *different* rule
+      (`HighActionFrequencyRule`, not touched by the fix above) immediately flooded the same
+      way. Root cause was architectural, not rule-specific: `DefenseEngine.HandleEventAsync`
+      created a brand-new `Alert` row, unconditionally, for every event that produced any rule
+      finding - so any rule whose condition stays true across a sustained burst floods,
+      regardless of whether its own feature-computation has a leak. Worse: `DecideAndActAsync`
+      (the response decision/execution path) has no idempotency guard either - unconditionally
+      creates a new `PendingApproval`, or unconditionally *re-executes* the actual response
+      action if auto-containment is on and the level is auto-executable. A sustained burst with
+      auto-containment enabled could have hammered `IsolateEndpointAsync`/`netsh` dozens of
+      times for one incident. Auto-containment defaults off, so no real isolation happened
+      here, but the exposure was real. Fixed with alert coalescing
+      (`AlertRepository.FindRecentOpenAlertAsync` + merge-into-existing-alert logic in
+      `HandleEventAsync`, gated so `DecideAndActAsync`/SIEM-forward only run for genuinely new
+      alerts) - 4 new regression tests.
+
+      This two-layer discovery is exactly the class of bug only real, sustained live traffic
+      (not a unit test firing one or two synthetic events) surfaces - worth deliberately
       generating varied real activity (not just one-off single actions) on future validation
-      passes to catch anything similar in the remaining 13 rules.
+      passes to catch anything similar in the remaining rules, and worth specifically retrying
+      a burst-style test (many events in a short window) since that's what triggers this class
+      of bug specifically.
 - [ ] **Security event log collector**: trigger each event ID it claims to understand
       (4624/4625/4648/4672/4697/4698/4702/4720/4732/4735/4964/4663) and confirm a
       `NormalizedEvent` is actually produced with sane field values - the property-index
