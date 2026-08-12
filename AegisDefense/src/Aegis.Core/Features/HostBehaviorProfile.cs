@@ -27,9 +27,6 @@ public sealed class HostBehaviorProfile
     private readonly LinkedList<DateTimeOffset> _recentFileWrites = new();
 
     private int _techniqueSwitchAfterFailureCount;
-    private double? _persistenceAfterExecutionSeconds;
-    private double? _credentialToRemoteAuthSeconds;
-    private double? _reconToActionSeconds;
     private DateTimeOffset? _lastHighEntropyWriteAt;
 
     public HostBehaviorProfile(string hostId, IProcessBaseline baseline, TimeSpan? window = null)
@@ -65,12 +62,12 @@ public sealed class HostBehaviorProfile
 
         UpdateAuthTracking(evt);
         UpdateTechniqueSwitch(evt);
-        UpdatePersistenceTiming(evt, rarity, complexity);
-        UpdateCredentialTiming(evt);
-        UpdateReconTiming(evt);
+        var persistenceAfterExecutionSeconds = UpdatePersistenceTiming(evt, rarity, complexity);
+        var credentialToRemoteAuthSeconds = UpdateCredentialTiming(evt);
+        var reconToActionSeconds = UpdateReconTiming(evt);
         UpdateFileWriteBurst(evt);
 
-        return BuildSnapshot(evt.Timestamp, rarity, complexity);
+        return BuildSnapshot(evt.Timestamp, rarity, complexity, persistenceAfterExecutionSeconds, credentialToRemoteAuthSeconds, reconToActionSeconds);
     }
 
     private void Trim(DateTimeOffset now)
@@ -115,12 +112,26 @@ public sealed class HostBehaviorProfile
         }
     }
 
-    private void UpdatePersistenceTiming(NormalizedEvent evt, double rarity, double complexity)
+    /// <summary>
+    /// Returns the "shortly after" delta in seconds only for the specific event that actually
+    /// completes the suspicious-execution -&gt; persistence pair - never a value that lingers
+    /// into unrelated later events. Confirmed as a real bug during live Windows testing: an
+    /// earlier version stored this as a sticky field that, once set, was included in every
+    /// subsequent <see cref="FeatureSnapshot"/> regardless of the current event's type -
+    /// producing a duplicate "Persistence created shortly after suspicious execution" alert
+    /// for literally every following event (routine Windows service/task churn included) for
+    /// the rest of the host profile's lifetime. The anchor timestamp itself
+    /// (<see cref="_lastSuspiciousExecutionAt"/>) still persists across calls, by design -
+    /// several distinct persistence artifacts within the window after one suspicious execution
+    /// should each still be reported once - only the *output* is now scoped to the one event
+    /// that qualifies.
+    /// </summary>
+    private double? UpdatePersistenceTiming(NormalizedEvent evt, double rarity, double complexity)
     {
         if (EventSemantics.IsSuspiciousExecution(evt.ActionType, rarity, complexity))
         {
             _lastSuspiciousExecutionAt = evt.Timestamp;
-            return;
+            return null;
         }
 
         if (EventSemantics.IsPersistenceArtifact(evt.ActionType) && _lastSuspiciousExecutionAt is { } execAt)
@@ -128,17 +139,20 @@ public sealed class HostBehaviorProfile
             var delta = (evt.Timestamp - execAt).TotalSeconds;
             if (delta is >= 0 and <= 900) // within 15 minutes counts as "shortly after" per doc §7
             {
-                _persistenceAfterExecutionSeconds = delta;
+                return delta;
             }
         }
+
+        return null;
     }
 
-    private void UpdateCredentialTiming(NormalizedEvent evt)
+    /// <summary>See <see cref="UpdatePersistenceTiming"/> for why this returns a per-event value instead of setting a sticky field.</summary>
+    private double? UpdateCredentialTiming(NormalizedEvent evt)
     {
         if (EventSemantics.IsCredentialSensitive(evt.ActionType))
         {
             _lastCredentialAccessAt = evt.Timestamp;
-            return;
+            return null;
         }
 
         if (EventSemantics.IsRemoteAuthentication(evt.ActionType) && _lastCredentialAccessAt is { } credAt)
@@ -146,17 +160,31 @@ public sealed class HostBehaviorProfile
             var delta = (evt.Timestamp - credAt).TotalSeconds;
             if (delta is >= 0 and <= 1800)
             {
-                _credentialToRemoteAuthSeconds = delta;
+                return delta;
             }
         }
+
+        return null;
     }
 
-    private void UpdateReconTiming(NormalizedEvent evt)
+    /// <summary>
+    /// See <see cref="UpdatePersistenceTiming"/> for why this returns a per-event value instead
+    /// of setting a sticky field. This one needs an extra step beyond that fix: unlike
+    /// persistence/credential timing (each scoped to a specific, comparatively rare target
+    /// ActionType), "action after recon" deliberately matches *any* subsequent event - so
+    /// without also consuming <see cref="_lastDiscoveryAt"/> once it produces a match, this
+    /// would still fire on every single following event for the rest of the 10-minute window
+    /// (a smaller version of the same duplicate-alert flood the sticky-field bug caused). The
+    /// anchor is cleared after reporting the first action that follows a discovery-like event,
+    /// matching the rule's actual description ("Action taken only Ns after a discovery/
+    /// reconnaissance result") - singular, not "everything for the next 10 minutes."
+    /// </summary>
+    private double? UpdateReconTiming(NormalizedEvent evt)
     {
         if (EventSemantics.IsDiscoveryLike(evt.ActionType, evt.ObjectType))
         {
             _lastDiscoveryAt = evt.Timestamp;
-            return;
+            return null;
         }
 
         if (_lastDiscoveryAt is { } reconAt && evt.ActionType is not ActionType.AuthenticationFailure)
@@ -164,9 +192,12 @@ public sealed class HostBehaviorProfile
             var delta = (evt.Timestamp - reconAt).TotalSeconds;
             if (delta is >= 0 and <= 600)
             {
-                _reconToActionSeconds = delta;
+                _lastDiscoveryAt = null;
+                return delta;
             }
         }
+
+        return null;
     }
 
     private static readonly TimeSpan FileBurstWindow = TimeSpan.FromSeconds(60);
@@ -195,7 +226,8 @@ public sealed class HostBehaviorProfile
         }
     }
 
-    private FeatureSnapshot BuildSnapshot(DateTimeOffset asOf, double rarity, double complexity)
+    private FeatureSnapshot BuildSnapshot(DateTimeOffset asOf, double rarity, double complexity,
+        double? persistenceAfterExecutionSeconds, double? credentialToRemoteAuthSeconds, double? reconToActionSeconds)
     {
         var windowStart = asOf - _window;
         var windowEvents = _recent; // already trimmed
@@ -261,10 +293,10 @@ public sealed class HostBehaviorProfile
             RemoteContactRate = contactRate,
             NewDestinationCount = newDestinations,
             PrivilegeChangeCount = privilegeChanges,
-            PersistenceAfterExecutionSeconds = _persistenceAfterExecutionSeconds,
-            CredentialToRemoteAuthSeconds = _credentialToRemoteAuthSeconds,
+            PersistenceAfterExecutionSeconds = persistenceAfterExecutionSeconds,
+            CredentialToRemoteAuthSeconds = credentialToRemoteAuthSeconds,
             TechniqueSwitchAfterFailureCount = _techniqueSwitchAfterFailureCount,
-            ReconToActionSeconds = _reconToActionSeconds,
+            ReconToActionSeconds = reconToActionSeconds,
             CrossHostSimilarHostCount = 0, // populated by an enterprise-level correlator (WP3+), not a single host profile
             WindowEventCount = windowEvents.Count,
             FileWriteBurstCount = _recentFileWrites.Count,

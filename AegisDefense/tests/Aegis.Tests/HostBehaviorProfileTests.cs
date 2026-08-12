@@ -82,6 +82,63 @@ public class HostBehaviorProfileTests
     }
 
     [Fact]
+    public void PersistenceAfterExecution_DoesNotLeakIntoUnrelatedLaterEvents()
+    {
+        // Regression test for a real bug found during live Windows testing: the correlation
+        // value used to be stored as a sticky field that, once set, was included in *every*
+        // subsequent snapshot regardless of the current event's type - producing a duplicate
+        // alert for literally every following event (routine Windows service/task churn
+        // included) for the rest of the host profile's lifetime. It must only be non-null for
+        // the one event that actually completes the pair.
+        var profile = new HostBehaviorProfile("host-1", new InMemoryProcessBaseline());
+        var t0 = DateTimeOffset.UtcNow;
+
+        var suspicious = Evt(ActionType.ProcessCreate, t0) with { CommandLine = ObfuscatedCommandLine };
+        profile.Ingest(suspicious);
+
+        var matchingSnap = profile.Ingest(Evt(ActionType.ServiceCreate, t0.AddMinutes(2), objectId: "svc-1"));
+        Assert.NotNull(matchingSnap.PersistenceAfterExecutionSeconds);
+
+        // An unrelated event well within the same 15-minute correlation window - must NOT
+        // carry the stale delta forward.
+        var laterSnap = profile.Ingest(Evt(ActionType.ImageLoad, t0.AddMinutes(3), objectId: "some.dll"));
+        Assert.Null(laterSnap.PersistenceAfterExecutionSeconds);
+
+        // Even another genuine persistence artifact, once outside the window from the
+        // original suspicious execution, must not resurrect a stale value either.
+        var muchLaterSnap = profile.Ingest(Evt(ActionType.ServiceCreate, t0.AddMinutes(20), objectId: "svc-2"));
+        Assert.Null(muchLaterSnap.PersistenceAfterExecutionSeconds);
+    }
+
+    [Fact]
+    public void CredentialToRemoteAuth_DoesNotLeakIntoUnrelatedLaterEvents()
+    {
+        var profile = new HostBehaviorProfile("host-1", new InMemoryProcessBaseline());
+        var t0 = DateTimeOffset.UtcNow;
+
+        profile.Ingest(Evt(ActionType.CredentialAccess, t0));
+        var matchingSnap = profile.Ingest(Evt(ActionType.RemoteAuthentication, t0.AddMinutes(5)));
+        Assert.NotNull(matchingSnap.CredentialToRemoteAuthSeconds);
+
+        var laterSnap = profile.Ingest(Evt(ActionType.ImageLoad, t0.AddMinutes(6)));
+        Assert.Null(laterSnap.CredentialToRemoteAuthSeconds);
+    }
+
+    [Fact]
+    public void ReconToAction_DoesNotLeakIntoUnrelatedLaterEvents()
+    {
+        var profile = new HostBehaviorProfile("host-1", new InMemoryProcessBaseline());
+        var t0 = DateTimeOffset.UtcNow;
+
+        profile.Ingest(Evt(ActionType.ShareAccess, t0));
+        var matchingSnap = profile.Ingest(Evt(ActionType.ProcessCreate, t0.AddSeconds(30)));
+        Assert.NotNull(matchingSnap.ReconToActionSeconds);
+
+        var laterSnap = profile.Ingest(Evt(ActionType.ImageLoad, t0.AddSeconds(45)));
+        Assert.Null(laterSnap.ReconToActionSeconds);
+    }
+
+    [Fact]
     public void NewDestinationCount_OnlyCountsFirstEverContact()
     {
         var profile = new HostBehaviorProfile("host-1", new InMemoryProcessBaseline());
