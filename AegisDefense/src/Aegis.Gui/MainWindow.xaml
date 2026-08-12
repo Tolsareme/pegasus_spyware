@@ -144,11 +144,11 @@
                 <DataGrid ItemsSource="{Binding Events}" Margin="8">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="150"/>
-                        <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="110"/>
+                        <DataGridTextColumn Header="Host" Binding="{Binding HostId}" Width="150"/>
                         <DataGridTextColumn Header="User" Binding="{Binding UserId}" Width="100"/>
                         <DataGridTextColumn Header="Action" Binding="{Binding ActionType}" Width="130"/>
                         <DataGridTextColumn Header="Object" Binding="{Binding ObjectId}" Width="180"/>
-                        <DataGridTextColumn Header="Image" Binding="{Binding ImagePath}" Width="180"/>
+                        <DataGridTextColumn Header="Image" Binding="{Binding ImagePath}" Width="*"/>
                         <DataGridTextColumn Header="Dest" Binding="{Binding DestinationIp}" Width="110"/>
                         <DataGridTextColumn Header="Port" Binding="{Binding DestinationPort}" Width="60"/>
                         <DataGridTextColumn Header="Result" Binding="{Binding Result}" Width="70"/>

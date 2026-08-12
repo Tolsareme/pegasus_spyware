@@ -31,22 +31,38 @@ source of truth for "have we actually run this yet."
       `%ProgramData%\AegisDefense\{data,logs,keys}`, and logs "Defense engine started."
       **Verified**, after the `PlatformTarget=x64` fix above.
 - [x] `AegisDefenseConsole.exe` starts, connects to the console pipe, and the Dashboard tab
-      populates within one refresh cycle (5s). **Verified**, after a real bug fix: found and
-      fixed `AegisPipeClient` constructing its `NamedPipeClientStream` without
-      `TokenImpersonationLevel.Impersonation`, which defaulted to `.None` and made every v2
-      RBAC role-resolution attempt fail closed to `Unknown` - every request was refused with
-      "Caller could not be mapped to an authorized role" even for a fully elevated
-      Administrator. Fixed in `Aegis.Ipc/AegisPipeClient.cs`.
+      populates within one refresh cycle (5s). **Verified**, after two real bug fixes found
+      back-to-back on real Windows: (1) `AegisPipeClient` constructed its
+      `NamedPipeClientStream` without `TokenImpersonationLevel.Impersonation`, which defaults
+      to `.None` and made every v2 RBAC role-resolution attempt fail closed to `Unknown` -
+      every request was refused with "Caller could not be mapped to an authorized role" even
+      for a fully elevated Administrator (fixed in `Aegis.Ipc/AegisPipeClient.cs`); (2) after
+      fixing (1), `AegisPipeServer` still resolved the caller's identity *before* reading
+      anything from the pipe, which threw `"Unable to impersonate using a named pipe until
+      data has been read from that pipe"` - a real Win32 `ImpersonateNamedPipeClient`
+      constraint neither of us could have found without an actual named-pipe client
+      connecting on real Windows. Fixed by moving resolution to after the first successful
+      read (`AegisPipeServer.HandleClientAsync`). Both confirmed fixed: clean startup log,
+      GUI shows "Administrator (full control)" with no error, Dashboard/Events populate.
 - [ ] `scripts\install-service.ps1` actually registers and the service starts under
       `services.msc` / `Get-Service AegisDefenseService`.
 - [ ] `scripts\uninstall-service.ps1` (with and without `-PurgeData`) actually removes it.
 
 ## 2. Telemetry collectors (Aegis.Sensor)
 
-- [ ] **ETW kernel collector** (`EtwKernelCollector`) actually starts when the service runs
+- [x] **ETW kernel collector** (`EtwKernelCollector`) actually starts when the service runs
       elevated (LocalSystem) - confirm via the service log that it's the active collector,
       not the WMI fallback. Test on both an old target (Windows 10 / Server 2016) and a new
       one (Windows 11 / Server 2025) since the doc's whole premise is spanning both.
+      **Verified on Windows 11** (`DESKTOP-95MROPV`): log shows "ETW kernel session started
+      (Process/ImageLoad/NetworkTCPIP)" and "WMI-based ProcessTrace/NetworkConnection
+      collectors are not started, to avoid double-reporting" - real `ImageLoad` events (Chrome,
+      system DLLs) and real `NetworkConnect` events (destination IP:port 53/DNS) flowed all
+      the way through to the GUI's Events tab with sane field values. Also confirmed the
+      collector's stale-session recovery path for free: a log line "An existing NT Kernel
+      Logger session was found ... stopping it to reclaim the session" fired correctly after
+      an earlier unclean shutdown during this same testing session. Still need: the same
+      confirmation on an old target (Windows 10 / Server 2016) - not yet tested.
 - [ ] **WMI fallback** actually engages when ETW can't start (e.g. run as a restricted, non-
       elevated account temporarily) and that `CollectorHost` doesn't double-report the same
       activity from both paths simultaneously.
