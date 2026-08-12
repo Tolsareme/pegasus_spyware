@@ -66,7 +66,9 @@ source of truth for "have we actually run this yet."
 - [ ] **WMI fallback** actually engages when ETW can't start (e.g. run as a restricted, non-
       elevated account temporarily) and that `CollectorHost` doesn't double-report the same
       activity from both paths simultaneously.
-- [x] **Detection rule quality under real, live-fire activity** - not originally a checklist
+- [ ] **Detection rule quality under real, live-fire activity** (in progress - two real bugs
+      found and fixed, a third retest is still needed to confirm clean) - not originally a
+      checklist
       line item, but real testing surfaced it, so recording it here. Ran an actual encoded
       PowerShell downloader cradle (`-enc` + `IEX (New-Object Net.WebClient).DownloadString(...)`
       against the harmless placeholder domain `example.com`) and checked the Alerts tab.
@@ -95,7 +97,22 @@ source of truth for "have we actually run this yet."
       `HandleEventAsync`, gated so `DecideAndActAsync`/SIEM-forward only run for genuinely new
       alerts) - 4 new regression tests.
 
-      This two-layer discovery is exactly the class of bug only real, sustained live traffic
+      **Retested and the flood was still there** - same rule, same pattern. Root cause of
+      *that* was a check-then-act race: `CollectorHost` dispatches events to
+      `HandleEventAsync` concurrently (fire-and-forget, no serialization), so during a real
+      burst many events each checked "does an open alert exist?" before any of them had
+      finished creating one. The first coalescing fix was logically correct for sequential
+      processing but never accounted for the concurrency this codebase already documents and
+      guards against elsewhere (`_chainLock`). Fixed with a `SemaphoreSlim` around the
+      find-merge-upsert critical section. Also found and fixed, while reviewing this path, a
+      second bug that would have silently undermined the fix even without the race:
+      `AlertRepository.UpsertAsync`'s `ON CONFLICT` clause omitted
+      `evidence_event_ids_json`/`evidence_summary_json`/`estimated_state`, so a coalesced
+      alert's merged evidence would never have actually persisted to disk. **Still needs a
+      third live retest** to confirm the race fix actually holds under real concurrent load -
+      not yet confirmed clean, only confirmed to compile/pass the portable suite.
+
+      This multi-round discovery is exactly the class of bug only real, sustained live traffic
       (not a unit test firing one or two synthetic events) surfaces - worth deliberately
       generating varied real activity (not just one-off single actions) on future validation
       passes to catch anything similar in the remaining rules, and worth specifically retrying
