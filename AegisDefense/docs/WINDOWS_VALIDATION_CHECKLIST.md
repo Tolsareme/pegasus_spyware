@@ -66,6 +66,22 @@ source of truth for "have we actually run this yet."
 - [ ] **WMI fallback** actually engages when ETW can't start (e.g. run as a restricted, non-
       elevated account temporarily) and that `CollectorHost` doesn't double-report the same
       activity from both paths simultaneously.
+- [x] **Detection rule quality under real, live-fire activity** - not originally a checklist
+      line item, but real testing surfaced it, so recording it here. Ran an actual encoded
+      PowerShell downloader cradle (`-enc` + `IEX (New-Object Net.WebClient).DownloadString(...)`
+      against the harmless placeholder domain `example.com`) and checked the Alerts tab.
+      **Found and fixed a severe bug**: `PersistenceAfterSuspiciousExecutionRule` fired 20+
+      times for what should have been one detection - `HostBehaviorProfile` stored the
+      "persistence shortly after suspicious execution" correlation as a sticky field that,
+      once set, was included in *every* subsequent event's snapshot regardless of that event's
+      type, so the rule kept re-firing on ordinary background activity (routine Windows
+      service/task churn) for the rest of the host profile's in-memory lifetime. The same
+      pattern affected two more rules (`CredentialAccessThenRemoteAuthRule`,
+      `ReconToActionPivotRule`). Fixed and covered by 3 new regression tests - see the commit
+      for the full explanation. This is exactly the class of bug only real, sustained live
+      traffic (not a unit test firing one or two synthetic events) surfaces - worth deliberately
+      generating varied real activity (not just one-off single actions) on future validation
+      passes to catch anything similar in the remaining 13 rules.
 - [ ] **Security event log collector**: trigger each event ID it claims to understand
       (4624/4625/4648/4672/4697/4698/4702/4720/4732/4735/4964/4663) and confirm a
       `NormalizedEvent` is actually produced with sane field values - the property-index
