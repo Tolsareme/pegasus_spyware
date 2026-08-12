@@ -20,13 +20,23 @@ source of truth for "have we actually run this yet."
 
 ## 1. Baseline: does it even run?
 
-- [ ] `dotnet build AegisDefense.sln -c Release` on Windows with the .NET 8 SDK + ".NET
+- [x] `dotnet build AegisDefense.sln -c Release` on Windows with the .NET 8 SDK + ".NET
       desktop development" workload. Confirms the WPF GUI actually links/runs, not just
-      cross-compiles.
-- [ ] `AegisDefenseService.exe --console` starts without an unhandled exception, creates
+      cross-compiles. **Verified.** Found and fixed along the way: a file-lock during
+      restore (stale build-server process - `dotnet build-server shutdown` resolved it, not
+      a code bug) and `Aegis.Service` needed `PlatformTarget=x64` pinned explicitly for
+      `Microsoft.Data.Sqlite`'s native dependency to load reliably on classic .NET
+      Framework (see the fix in `Aegis.Service.csproj`).
+- [x] `AegisDefenseService.exe --console` starts without an unhandled exception, creates
       `%ProgramData%\AegisDefense\{data,logs,keys}`, and logs "Defense engine started."
-- [ ] `AegisDefenseConsole.exe` starts, connects to the console pipe, and the Dashboard tab
-      populates within one refresh cycle (5s).
+      **Verified**, after the `PlatformTarget=x64` fix above.
+- [x] `AegisDefenseConsole.exe` starts, connects to the console pipe, and the Dashboard tab
+      populates within one refresh cycle (5s). **Verified**, after a real bug fix: found and
+      fixed `AegisPipeClient` constructing its `NamedPipeClientStream` without
+      `TokenImpersonationLevel.Impersonation`, which defaulted to `.None` and made every v2
+      RBAC role-resolution attempt fail closed to `Unknown` - every request was refused with
+      "Caller could not be mapped to an authorized role" even for a fully elevated
+      Administrator. Fixed in `Aegis.Ipc/AegisPipeClient.cs`.
 - [ ] `scripts\install-service.ps1` actually registers and the service starts under
       `services.msc` / `Get-Service AegisDefenseService`.
 - [ ] `scripts\uninstall-service.ps1` (with and without `-PurgeData`) actually removes it.
@@ -124,7 +134,9 @@ source of truth for "have we actually run this yet."
       actions) is actually refused server-side - not just disabled in the UI (try sending a
       raw IPC request from a script as that account to confirm the server-side check, not
       just the client-side `IsEnabled` binding).
-- [ ] Confirm an Administrator-group account gets full control as expected.
+- [x] Confirm an Administrator-group account gets full control as expected. **Verified**
+      (after the `TokenImpersonationLevel` fix in §1 above) - top bar shows "Administrator
+      (full control)" with no error, Dashboard tiles populate normally.
 - [ ] Confirm an account in *neither* group cannot connect at all (the pipe ACL) or, if it
       can connect, is refused every request as `Unknown`.
 - [ ] Confirm `WhoAmI`'s `WindowsIdentity` field (v2.1 fix) now actually shows the real
