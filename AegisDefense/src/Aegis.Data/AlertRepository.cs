@@ -26,7 +26,10 @@ VALUES
   $recommended_response, $applied_response, $campaign_id)
 ON CONFLICT(alert_id) DO UPDATE SET
   status=excluded.status, severity=excluded.severity, confidence=excluded.confidence,
-  risk_breakdown_json=excluded.risk_breakdown_json, applied_response=excluded.applied_response,
+  estimated_state=excluded.estimated_state, risk_breakdown_json=excluded.risk_breakdown_json,
+  evidence_event_ids_json=excluded.evidence_event_ids_json,
+  evidence_summary_json=excluded.evidence_summary_json,
+  recommended_response=excluded.recommended_response, applied_response=excluded.applied_response,
   campaign_id=excluded.campaign_id;";
 
         cmd.Parameters.AddWithValue("$alert_id", alert.AlertId.ToString());

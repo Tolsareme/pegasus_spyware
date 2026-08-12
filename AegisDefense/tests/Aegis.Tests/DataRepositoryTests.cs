@@ -71,6 +71,30 @@ public class DataRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task AlertRepository_ReUpsert_PersistsGrownEvidence()
+    {
+        // Regression test for a real bug: the ON CONFLICT clause used to omit
+        // evidence_event_ids_json/evidence_summary_json/estimated_state, so re-upserting an
+        // existing alert (the "coalesce repeated detections into one alert" path in
+        // DefenseEngine) silently dropped the merged evidence on every write.
+        var repo = new AlertRepository(_db);
+        var alert = new Alert { HostId = "host-1", Title = "High action frequency", Source = "AEG-001" };
+        alert.EvidenceEventIds.Add(Guid.NewGuid());
+        alert.EvidenceSummary.Add("first occurrence");
+        await repo.UpsertAsync(alert);
+
+        alert.EvidenceEventIds.Add(Guid.NewGuid());
+        alert.EvidenceSummary.Add("second occurrence");
+        alert.EstimatedState = AttackState.LateralMovement;
+        await repo.UpsertAsync(alert);
+
+        var reloaded = Assert.Single(await repo.QueryAsync(hostId: "host-1"));
+        Assert.Equal(2, reloaded.EvidenceEventIds.Count);
+        Assert.Equal(2, reloaded.EvidenceSummary.Count);
+        Assert.Equal(AttackState.LateralMovement, reloaded.EstimatedState);
+    }
+
+    [Fact]
     public async Task AlertRepository_FindRecentOpenAlert_FindsMatchWithinWindow()
     {
         var repo = new AlertRepository(_db);

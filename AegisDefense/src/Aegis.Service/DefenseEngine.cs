@@ -63,6 +63,19 @@ public sealed class DefenseEngine
     /// - and, worse, a brand-new response decision with no idempotency guard of its own, see
     /// DecideAndActAsync - for literally every single qualifying event.</summary>
     private static readonly TimeSpan AlertCoalesceWindow = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Guards the find-existing-alert -&gt; merge-or-create -&gt; upsert sequence in
+    /// HandleEventAsync. Confirmed necessary via live Windows testing: collectors call
+    /// HandleEventAsync concurrently (CollectorHost fire-and-forgets each event, no
+    /// serialization - see its own class doc), so during a real burst many events can each
+    /// check "does an open alert already exist?" before *any* of them has finished creating
+    /// one - a classic check-then-act race that let the alert-flooding bug survive the first
+    /// coalescing fix attempt. A plain `lock` can't wrap the `await`s this critical section
+    /// needs, hence SemaphoreSlim rather than the `object`+`lock` pattern used elsewhere in
+    /// this class (_chainLock/_profileLock, whose critical sections stay synchronous).
+    /// </summary>
+    private readonly SemaphoreSlim _alertCoalesceLock = new(1, 1);
     private readonly Dictionary<string, HostBehaviorProfile> _hostProfiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _profileLock = new();
 
@@ -359,30 +372,42 @@ public sealed class DefenseEngine
             // inserting a new row - see AlertCoalesceWindow's doc comment for why this is a
             // correctness fix, not just tidiness: DecideAndActAsync has no idempotency guard,
             // so without this a sustained burst would re-request approval or re-execute a real
-            // containment action once per event.
-            var existingOpenAlert = await _alerts.FindRecentOpenAlertAsync(candidateAlert.HostId, candidateAlert.Source, AlertCoalesceWindow, evt.Timestamp).ConfigureAwait(false);
-
+            // containment action once per event. The find-then-create sequence is a
+            // check-then-act race across concurrently-processed events (see _alertCoalesceLock's
+            // doc comment - confirmed via live Windows testing, not theoretical), so it has to
+            // run under a lock, not just be logically correct in isolation.
             Alert alert;
-            var isNewAlert = existingOpenAlert is null;
-            if (existingOpenAlert is not null)
+            bool isNewAlert;
+            await _alertCoalesceLock.WaitAsync().ConfigureAwait(false);
+            try
             {
-                existingOpenAlert.EvidenceEventIds.Add(evt.EventId);
-                foreach (var line in candidateAlert.EvidenceSummary)
-                {
-                    if (!existingOpenAlert.EvidenceSummary.Contains(line)) existingOpenAlert.EvidenceSummary.Add(line);
-                }
-                if (candidateAlert.Severity > existingOpenAlert.Severity) existingOpenAlert.Severity = candidateAlert.Severity;
-                if (candidateAlert.Confidence > existingOpenAlert.Confidence) existingOpenAlert.Confidence = candidateAlert.Confidence;
-                existingOpenAlert.EstimatedState = candidateAlert.EstimatedState;
-                existingOpenAlert.RiskBreakdown = candidateAlert.RiskBreakdown;
-                alert = existingOpenAlert;
-            }
-            else
-            {
-                alert = candidateAlert;
-            }
+                var existingOpenAlert = await _alerts.FindRecentOpenAlertAsync(candidateAlert.HostId, candidateAlert.Source, AlertCoalesceWindow, evt.Timestamp).ConfigureAwait(false);
+                isNewAlert = existingOpenAlert is null;
 
-            await _alerts.UpsertAsync(alert).ConfigureAwait(false);
+                if (existingOpenAlert is not null)
+                {
+                    existingOpenAlert.EvidenceEventIds.Add(evt.EventId);
+                    foreach (var line in candidateAlert.EvidenceSummary)
+                    {
+                        if (!existingOpenAlert.EvidenceSummary.Contains(line)) existingOpenAlert.EvidenceSummary.Add(line);
+                    }
+                    if (candidateAlert.Severity > existingOpenAlert.Severity) existingOpenAlert.Severity = candidateAlert.Severity;
+                    if (candidateAlert.Confidence > existingOpenAlert.Confidence) existingOpenAlert.Confidence = candidateAlert.Confidence;
+                    existingOpenAlert.EstimatedState = candidateAlert.EstimatedState;
+                    existingOpenAlert.RiskBreakdown = candidateAlert.RiskBreakdown;
+                    alert = existingOpenAlert;
+                }
+                else
+                {
+                    alert = candidateAlert;
+                }
+
+                await _alerts.UpsertAsync(alert).ConfigureAwait(false);
+            }
+            finally
+            {
+                _alertCoalesceLock.Release();
+            }
 
             if (isNewAlert)
             {
